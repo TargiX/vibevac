@@ -19,7 +19,7 @@ evidence and lets you decide what happens next.
 When the evidence is incomplete, VibeVac does the least exciting — and most
 useful — thing a cleaner can do: nothing.
 
-## Get VibeVac
+## 📦 Get VibeVac
 
 **[Download VibeVac 0.1.0 for macOS](https://github.com/TargiX/vibevac/releases/tag/v0.1.0)**
 
@@ -31,7 +31,7 @@ your convenience.”
 Scanning never removes anything. Cleanup requires an explicit scope, a complete
 preview, fresh safety checks, and typed confirmation.
 
-## The idea
+## 🧭 The idea
 
 Most cleaners begin with a list of folders they know how to delete. VibeVac
 starts with a stricter question:
@@ -45,7 +45,7 @@ before it offers an action.
 
 The hesitation is the feature.
 
-## The first patient
+## 🧪 The first patient
 
 The first Mac scanned by VibeVac was the one used to build it:
 
@@ -60,7 +60,7 @@ The first Mac scanned by VibeVac was the one used to build it:
 No real caches were deleted to produce those numbers. Even vacuum cleaners
 should dogfood dry-run mode first.
 
-## What it shows
+## 🔎 What it shows
 
 The control center gives every workspace an evidence trail instead of a mystery
 badge:
@@ -79,7 +79,7 @@ badge:
 Cleanup level only decides what may enter a plan. It never turns a wider cache
 selection into worktree deletion.
 
-## What counts as rebuildable
+## ♻️ What counts as rebuildable
 
 VibeVac recognizes a deliberately narrow allowlist of generated directories,
 including:
@@ -99,7 +99,7 @@ worktree must be registered, clean, synced, merged, old enough, process-free,
 and free of ignored data outside the narrow rebuildable allowlist. Standalone
 repositories are never eligible.
 
-## Where it looks
+## 📍 Where it looks
 
 VibeVac does not roam across the entire disk hoping to find something dramatic.
 It scans explicit, bounded sources that exist on the Mac:
@@ -119,7 +119,7 @@ Hermes, Codex, or another tool placed them outside the original project folder.
 VibeVac does not inspect agent conversations, credentials, memories,
 application databases, or IDE `workspaceStorage`.
 
-## The trust model
+## 🛡️ The trust model
 
 Before removing selected caches, VibeVac:
 
@@ -138,7 +138,7 @@ common Git repository, and records reconstruction guidance.
 
 See the complete [safety model](docs/safety-model.md).
 
-## Local means local
+## 🔒 Local means local
 
 The desktop app runs scanning and cleanup through application-local Tauri
 commands. There is no account, telemetry, remote API, model, GitHub access, or
@@ -149,7 +149,7 @@ The optional contributor command `vibevac ui` uses a localhost compatibility
 server bound to `127.0.0.1`. Mutating requests require a random in-memory session
 token and matching browser origin.
 
-## CLI
+## ⌨️ CLI
 
 The scanner and inspector also work without the desktop UI:
 
@@ -174,7 +174,7 @@ Cache cleanup eligibility is independent from whole-workspace status. A dirty
 workspace may still contain verified ignored build caches while its source
 changes remain protected.
 
-## Build and contribute
+## 🛠️ Build and contribute
 
 Contributions are welcome, especially reproducible edge cases, new fixtures,
 and changes that make destructive code more boring. Safety changes need tests;
@@ -203,14 +203,14 @@ node dist/cli.js scan
 See [the release guide](docs/releasing.md) for signing, notarization, and GitHub
 Release steps.
 
-## Supported environments
+## 💻 Supported environments
 
 - Desktop app: macOS 12+, universal Apple Silicon and Intel release.
 - CLI: macOS and Linux with Node.js 20+.
 - System tools: Git, `du` for disk sizing, and `lsof` for active-process
   protection.
 
-## Roadmap
+## 🗺️ Roadmap
 
 - **0.1.x:** distribution, first-run trust, anonymized feedback, truthful scan
   progress, cancellation, incremental rescans, Pin, and Ignore.
@@ -224,6 +224,6 @@ VibeVac will not become another agent framework. Its job is to make the local
 infrastructure around coding agents understandable, reclaimable, and — when
 necessary — reconstructable.
 
-## License
+## 📄 License
 
 [MIT](LICENSE)
