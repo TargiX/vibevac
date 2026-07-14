@@ -135,5 +135,8 @@ jobs:
           find src-tauri/target/universal-apple-darwin/release/bundle -type f \
             \( -name '*.dmg' -o -name '*.app.tar.gz' \) -print0 \
             | sort -z \
-            | xargs -0 shasum -a 256 > SHA256SUMS.txt
+            | while IFS= read -r -d '' FILE_PATH; do
+                CHECKSUM=$(shasum -a 256 "$FILE_PATH" | awk '{ print $1 }')
+                printf '%s  %s\n' "$CHECKSUM" "$(basename "$FILE_PATH")"
+              done > SHA256SUMS.txt
           gh release upload "v$VERSION" SHA256SUMS.txt --clobber
