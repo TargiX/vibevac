@@ -48,8 +48,15 @@ Before publishing a DMG:
 7. attach the DMG to a GitHub Release and publish checksums.
 
 Signing and notarization require Apple Developer credentials. Keep the
-certificate, password, Apple API key, issuer ID, and team ID in GitHub Actions
-secrets; never commit them.
+certificate, password, App Store Connect Team API key, and issuer ID in GitHub
+Actions secrets; never commit them. The release workflow expects
+`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`,
+`APPLE_API_KEY`, `APPLE_API_KEY_P8`, and `APPLE_API_ISSUER`.
+
+Use a Team API key with `Developer` access. Individual App Store Connect keys
+cannot authenticate `notarytool`. The private `.p8` key is downloadable only
+once, so store it as the `APPLE_API_KEY_P8` secret immediately and keep the
+local copy outside the repository.
 
 ## GitHub distribution
 
