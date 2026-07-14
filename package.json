@@ -1,0 +1,73 @@
+{
+  "name": "vibevac",
+  "version": "0.1.0",
+  "description": "Keep the work. Vacuum rebuildable weight from AI coding workspaces.",
+  "author": "Ilya Moskovkin",
+  "license": "MIT",
+  "homepage": "https://github.com/TargiX/vibevac#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TargiX/vibevac.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TargiX/vibevac/issues"
+  },
+  "type": "module",
+  "bin": {
+    "vibevac": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "pnpm build:cli && pnpm build:ui",
+    "build:cli": "tsup src/cli.ts --format esm --dts --clean",
+    "build:ui": "vite build --config ui/vite.config.ts",
+    "dev": "tsx src/cli.ts",
+    "dev:frontend": "vite --config ui/vite.config.ts",
+    "dev:ui": "pnpm build:ui && tsx src/cli.ts ui --no-open",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && vue-tsc --noEmit -p ui/tsconfig.json",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "keywords": [
+    "ai",
+    "codex",
+    "claude-code",
+    "cursor",
+    "git",
+    "worktree",
+    "disk-cleanup",
+    "developer-tools"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "commander": "^14.0.0",
+    "open": "^10.2.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/node": "^24.0.0",
+    "@vitejs/plugin-vue": "^6.0.0",
+    "@lucide/vue": "^1.0.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.0",
+    "vue": "^3.5.0",
+    "vue-tsc": "^3.0.0"
+  },
+  "packageManager": "pnpm@9.12.3"
+}

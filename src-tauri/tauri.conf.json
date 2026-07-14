@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VibeVac",
+  "version": "0.1.0",
+  "identifier": "com.ilyamoskovkin.vibevac",
+  "build": {
+    "beforeDevCommand": "pnpm dev:frontend",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build:ui",
+    "frontendDist": "../dist/ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "VibeVac",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 1000,
+        "minHeight": 700,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost; base-uri 'none'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "category": "DeveloperTool",
+    "shortDescription": "Safe cleanup for AI coding workspaces",
+    "longDescription": "VibeVac separates source and Git state from verified rebuildable caches, then lets you reclaim storage with an explicit, revalidated cleanup plan.",
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  }
+}

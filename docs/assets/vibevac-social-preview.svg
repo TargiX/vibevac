@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="background" x1="80" y1="40" x2="1160" y2="620" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#202431" />
+      <stop offset="0.52" stop-color="#151820" />
+      <stop offset="1" stop-color="#0d1016" />
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(1020 120) rotate(136) scale(620 420)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#168dff" stop-opacity="0.2" />
+      <stop offset="1" stop-color="#168dff" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="icon-background" x1="850" y1="166" x2="1110" y2="426" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2c3044" />
+      <stop offset="1" stop-color="#11131d" />
+    </linearGradient>
+    <linearGradient id="icon-mark" x1="890" y1="185" x2="1080" y2="438" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#b8ffde" />
+      <stop offset="0.52" stop-color="#74e8b5" />
+      <stop offset="1" stop-color="#5ba7ff" />
+    </linearGradient>
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="28" stdDeviation="30" flood-color="#000" flood-opacity="0.42" />
+    </filter>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#background)" />
+  <rect width="1280" height="640" fill="url(#glow)" />
+  <path d="M0 639H1280" stroke="#ffffff" stroke-opacity="0.08" />
+
+  <g transform="translate(96 104)">
+    <text fill="#F6F7FA" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif" font-size="70" font-weight="700" letter-spacing="-3">VibeVac</text>
+    <text y="96" fill="#B5BBC8" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif" font-size="32" font-weight="560" letter-spacing="-0.9">Keep the work.</text>
+    <text y="136" fill="#83E9B2" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif" font-size="32" font-weight="620" letter-spacing="-0.9">Vacuum the rebuildable weight.</text>
+    <text y="210" fill="#818898" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif" font-size="22">Local macOS cleanup for AI coding workspaces and Git worktrees.</text>
+
+    <g transform="translate(0 264)" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif" font-size="17" font-weight="600">
+      <rect width="148" height="42" rx="21" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.11" />
+      <circle cx="22" cy="21" r="5" fill="#68D391" />
+      <text x="36" y="27" fill="#CFD4DD">Local only</text>
+
+      <g transform="translate(162 0)">
+        <rect width="166" height="42" rx="21" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.11" />
+        <circle cx="22" cy="21" r="5" fill="#68D391" />
+        <text x="36" y="27" fill="#CFD4DD">No telemetry</text>
+      </g>
+
+      <g transform="translate(342 0)">
+        <rect width="204" height="42" rx="21" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.11" />
+        <circle cx="22" cy="21" r="5" fill="#68D391" />
+        <text x="36" y="27" fill="#CFD4DD">Explicit review</text>
+      </g>
+    </g>
+
+    <text y="378" fill="#626978" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="17">OPEN SOURCE · TAURI · RUST · VUE</text>
+  </g>
+
+  <g transform="translate(830 130)" filter="url(#shadow)">
+    <rect width="322" height="322" rx="78" fill="url(#icon-background)" stroke="#ffffff" stroke-opacity="0.12" />
+    <path d="M66 80h48l49 150 49-150h48l-73 183h-48L66 80Z" fill="url(#icon-mark)" />
+    <path d="m238 40 10 27 27 10-27 10-10 27-10-27-27-10 27-10 10-27Z" fill="#F0FFF7" />
+  </g>
+
+  <g transform="translate(812 493)" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif">
+    <rect width="360" height="58" rx="17" fill="#0A84FF" />
+    <text x="180" y="36" fill="#FFFFFF" font-size="20" font-weight="650" text-anchor="middle">github.com/TargiX/vibevac</text>
+  </g>
+</svg>

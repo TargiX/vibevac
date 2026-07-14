@@ -1,0 +1,67 @@
+name: Bug report
+description: Report incorrect discovery, UI behavior, or a blocked cleanup operation.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve VibeVac. Never attach private source files, credentials, or a raw workspace report without reviewing it first.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Scan and discovery
+        - Cache inventory
+        - Cleanup preview
+        - Cache cleanup
+        - Entire-worktree removal
+        - Desktop interface
+        - CLI
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: VibeVac version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac architecture
+      placeholder: macOS 15.5, Apple Silicon
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open VibeVac
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Include only paths and logs you are comfortable publishing. Remove usernames, repository names, and source content when needed.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I reviewed the report and removed private paths, source, and credentials.
+          required: true
