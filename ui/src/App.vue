@@ -1272,9 +1272,9 @@ onUnmounted(stopScanTimer);
           <small>Dependencies and generated output</small>
         </article>
         <article class="metric-card">
-          <span>Source + Git retained</span>
+          <span>Retained files</span>
           <strong>{{ formatBytes(report.retainedSizeBytes) }}</strong>
-          <small>Never included in cache cleanup</small>
+          <small>Source, Git, and files outside verified caches</small>
         </article>
         <article class="storage-card">
           <div>
@@ -1411,12 +1411,12 @@ onUnmounted(stopScanTimer);
               :aria-label="
                 sortAriaLabel(
                   'reclaimable',
-                  cleanupScope === 'worktree' ? 'removal size' : 'reclaimable percentage',
+                  cleanupScope === 'worktree' ? 'checkout size' : 'reclaimable percentage',
                 )
               "
               @click="setSort('reclaimable')"
             >
-              {{ cleanupScope === "worktree" ? "Will remove" : "Reclaimable" }}
+              {{ cleanupScope === "worktree" ? "Checkout size" : "Reclaimable" }}
               <ArrowDown v-if="sortKey === 'reclaimable' && sortDirection === 'desc'" :size="12" />
               <ArrowUp v-else-if="sortKey === 'reclaimable'" :size="12" />
               <ArrowUpDown v-else :size="12" />
@@ -1478,7 +1478,12 @@ onUnmounted(stopScanTimer);
                     }}
                   </strong>
                 </div>
-                <div class="workspace-stat cache-stat">
+                <div
+                  class="workspace-stat"
+                  :class="{ 'cache-stat': cleanupScope === 'worktree'
+                    ? cleanupReadyPaths.has(workspace.path)
+                    : workspace.cacheCleanupAllowed }"
+                >
                   <strong>
                     {{
                       formatBytes(
