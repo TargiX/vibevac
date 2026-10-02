@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
 import { Command, Option } from "commander";
+import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { customDiscoveryRoots, defaultDiscoveryRoots } from "./services/discovery.js";
 import { renderHumanReport, renderWorkspaceInspection } from "./render/report.js";
 import { startUiServer } from "./server/ui-server.js";
 import { scanWorkspaces } from "./services/scanner.js";
+import { inventoryRebuildableCaches } from "./services/cache-inventory.js";
+import { executeCacheCleanup, planCacheCleanup } from "./services/cache-cleanup.js";
 
 interface ScanCommandOptions {
   root: string[];
@@ -87,7 +90,7 @@ program
       path: string,
       options: Pick<ScanCommandOptions, "json" | "size" | "staleAfter">,
     ) => {
-      const workspacePath = resolve(path);
+      const workspacePath = await realpath(resolve(path));
       const report = await scanWorkspaces(
         [{ tool: "custom", path: workspacePath, maxDepth: 0 }],
         {
@@ -95,7 +98,7 @@ program
           staleAfterDays: options.staleAfter,
         },
       );
-      const workspace = report.workspaces[0];
+      const workspace = report.workspaces.find((candidate) => candidate.path === workspacePath);
 
       if (!workspace) {
         throw new Error(`No Git workspace found at ${workspacePath}`);
@@ -111,6 +114,49 @@ program
       );
     },
   );
+
+program
+  .command("clean")
+  .description("preview selected verified caches; deletion requires --execute and --confirm")
+  .argument("<path>", "exact Git workspace to clean")
+  .addOption(new Option("--cache <relative-path>", "select a cache (repeatable)")
+    .argParser((value, previous: string[]) => [...previous, value]).default([]))
+  .option("--all", "select every verified cache in this workspace", false)
+  .option("--execute", "execute the previewed selection", false)
+  .option("--confirm <text>", "exact confirmation text printed by the preview")
+  .option("--json", "print machine-readable JSON", false)
+  .action(async (path: string, options: {
+    cache: string[]; all: boolean; execute: boolean; confirm?: string; json: boolean;
+  }) => {
+    if (options.all === (options.cache.length > 0)) {
+      throw new Error("Select --all or one or more --cache paths, never both");
+    }
+    if (options.confirm && !options.execute) {
+      throw new Error("--confirm requires --execute; omit both to preview");
+    }
+    const workspacePath = resolve(path);
+    const paths = options.all
+      ? (await inventoryRebuildableCaches(workspacePath)).map((cache) => cache.relativePath)
+      : options.cache;
+    const plan = await planCacheCleanup(workspacePath, paths);
+    if (options.execute && options.confirm !== plan.confirmation) {
+      throw new Error(`Confirmation does not match. Preview first, then use --confirm '${plan.confirmation}'`);
+    }
+    const result = options.execute
+      ? await executeCacheCleanup(workspacePath, paths)
+      : plan;
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else if ("removed" in result) {
+      process.stdout.write(`Cleaned ${result.removed.length} verified cache directories in ${result.workspacePath}\nAudit: ${result.auditPath}\n`);
+    } else {
+      process.stdout.write(`Cache cleanup preview: ${plan.workspacePath}\n`);
+      for (const cache of plan.caches) {
+        process.stdout.write(`  ${cache.relativePath} (${cache.sizeBytes === null ? "unknown size" : `${(cache.sizeBytes / 1e9).toFixed(2)} GB estimated`})\n`);
+      }
+      process.stdout.write(`No files removed. Confirmation: ${plan.confirmation}\nSizes are estimates; shared files may release less disk space.\n`);
+    }
+  });
 
 program
   .command("ui")

@@ -11,7 +11,7 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DAY_IN_SECONDS: i64 = 86_400;
-const CACHE_MAX_DEPTH: u8 = 4;
+const CACHE_MAX_DEPTH: u8 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -689,6 +689,13 @@ fn disk_usage_bytes(path: &Path) -> Result<u64, String> {
 
 fn cache_definition(name: &OsStr) -> Option<CacheDefinition> {
     let definition = match name.to_str()? {
+        "Intermediates.noindex" | "ModuleCache.noindex" | "Index.noindex"
+        | "CompilationCache.noindex" | "SDKStatCaches.noindex" => CacheDefinition {
+            kind: CacheKind::ToolCache,
+            name: "Xcode compiler cache",
+            rebuild_hint: "Xcode recreates this compiler cache on the next build. Release archives and Products are retained.",
+            requires_node_lockfile: false,
+        },
         "node_modules" => CacheDefinition {
             kind: CacheKind::Dependencies,
             name: "Installed dependencies",
@@ -760,6 +767,107 @@ fn cache_definition(name: &OsStr) -> Option<CacheDefinition> {
     Some(definition)
 }
 
+fn is_xcode_cache_name(name: &OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some(
+            "Intermediates.noindex"
+                | "ModuleCache.noindex"
+                | "Index.noindex"
+                | "CompilationCache.noindex"
+                | "SDKStatCaches.noindex"
+        )
+    )
+}
+
+fn is_protected_artifact(name: &OsStr) -> bool {
+    let name = name.to_string_lossy();
+    name == ".git"
+        || name == "Products"
+        || [".xcarchive", ".xcresult", ".dSYM", ".ipa"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+}
+
+fn is_xcode_root(path: &Path) -> bool {
+    let marker = path.join("info.plist");
+    let Ok(metadata) = fs::symlink_metadata(&marker) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 32_768 {
+        return false;
+    }
+    fs::read_to_string(marker)
+        .map(|info| {
+            info.contains("<key>WorkspacePath</key>")
+                && (info.contains(".xcworkspace</string>") || info.contains(".xcodeproj</string>"))
+        })
+        .unwrap_or(false)
+}
+
+fn is_xcode_cache(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if path.file_name() == Some(OsStr::new("Intermediates.noindex"))
+        && parent.file_name() != Some(OsStr::new("Build"))
+    {
+        return false;
+    }
+    let root = if path.file_name() == Some(OsStr::new("Intermediates.noindex"))
+        && parent.file_name() == Some(OsStr::new("Build"))
+    {
+        let Some(root) = parent.parent() else {
+            return false;
+        };
+        root
+    } else {
+        parent
+    };
+    is_xcode_root(root)
+}
+
+fn contains_protected_content(path: &Path) -> bool {
+    fn visit(path: &Path, depth: u8, remaining: &mut usize) -> bool {
+        if depth > CACHE_MAX_DEPTH || *remaining == 0 || is_xcode_root(path) {
+            return true;
+        }
+        *remaining -= 1;
+        let Ok(entries) = fs::read_dir(path) else {
+            return true;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return true;
+            };
+            if *remaining == 0 || is_protected_artifact(&entry.file_name()) {
+                return true;
+            }
+            *remaining -= 1;
+            let Ok(file_type) = entry.file_type() else {
+                return true;
+            };
+            if file_type.is_dir()
+                && !file_type.is_symlink()
+                && visit(&entry.path(), depth + 1, remaining)
+            {
+                return true;
+            }
+        }
+        false
+    }
+    visit(path, 0, &mut 2_000)
+}
+
+fn contains_tracked_files(workspace_path: &Path, relative_path: &Path) -> bool {
+    run_git(
+        workspace_path,
+        &["ls-files", "--", &relative_path.to_string_lossy()],
+    )
+    .map(|files| !files.is_empty())
+    .unwrap_or(true)
+}
+
 fn has_node_lockfile(workspace_path: &Path) -> bool {
     [
         "pnpm-lock.yaml",
@@ -816,6 +924,11 @@ fn inventory_rebuildable_caches(workspace_path: &Path) -> Result<Vec<CacheEntry>
                 continue;
             }
             let path = entry.path();
+            if is_protected_artifact(&entry.file_name())
+                || fs::symlink_metadata(path.join(".git")).is_ok()
+            {
+                continue;
+            }
             if let Some(definition) = cache_definition(&entry.file_name()) {
                 if definition.requires_node_lockfile && !node_lockfile_present {
                     continue;
@@ -823,9 +936,28 @@ fn inventory_rebuildable_caches(workspace_path: &Path) -> Result<Vec<CacheEntry>
                 let Ok(relative_path) = path.strip_prefix(workspace_path) else {
                     continue;
                 };
-                if is_ignored_by_git(workspace_path, relative_path) {
-                    candidates.push((path, definition));
+                if !is_ignored_by_git(workspace_path, relative_path) {
+                    continue;
                 }
+                if is_xcode_cache_name(&entry.file_name()) && !is_xcode_cache(&path) {
+                    continue;
+                }
+                if contains_tracked_files(workspace_path, relative_path)
+                    || (definition.kind == CacheKind::BuildOutput
+                        && contains_protected_content(&path))
+                {
+                    if depth < CACHE_MAX_DEPTH {
+                        visit(
+                            workspace_path,
+                            &path,
+                            depth + 1,
+                            node_lockfile_present,
+                            candidates,
+                        );
+                    }
+                    continue;
+                }
+                candidates.push((path, definition));
                 continue;
             }
             if depth < CACHE_MAX_DEPTH
@@ -1911,6 +2043,95 @@ mod tests {
         assert_eq!(caches.len(), 1);
         assert_eq!(caches[0].relative_path, "node_modules");
         assert_eq!(caches[0].kind, CacheKind::Dependencies);
+    }
+
+    #[test]
+    fn inventory_selects_xcode_subcaches_without_release_artifacts() {
+        let repository = fixture_repository();
+        let root = repository.path();
+        fs::write(root.join(".gitignore"), ".context/\n").unwrap();
+        let dd = ".context/build/release/DerivedData";
+        for path in [
+            format!("{dd}/Build/Intermediates.noindex/objects"),
+            format!("{dd}/ModuleCache.noindex/modules"),
+            format!("{dd}/Index.noindex/DataStore"),
+            format!("{dd}/Build/Products/App.app"),
+            ".context/build/Release.xcarchive/Products".to_owned(),
+            ".context/build/Release.dSYM/Contents".to_owned(),
+            ".context/build/QA.xcresult/Data".to_owned(),
+            ".context/build/nested/node_modules/pkg".to_owned(),
+        ] {
+            fs::create_dir_all(root.join(path)).unwrap();
+        }
+        fs::write(
+            root.join(format!("{dd}/info.plist")),
+            "<key>WorkspacePath</key><string>/project/App.xcworkspace</string>",
+        )
+        .unwrap();
+        fs::write(
+            root.join(".context/build/nested/.git"),
+            "gitdir: /other/git",
+        )
+        .unwrap();
+        fs::write(root.join(".context/build/Release.ipa"), "signed release").unwrap();
+        let mut paths: Vec<_> = inventory_rebuildable_caches(root)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.relative_path)
+            .collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                format!("{dd}/Build/Intermediates.noindex"),
+                format!("{dd}/Index.noindex"),
+                format!("{dd}/ModuleCache.noindex")
+            ]
+        );
+    }
+
+    #[test]
+    fn inventory_rejects_misleading_xcode_names_and_tracked_content() {
+        let repository = fixture_repository();
+        let root = repository.path();
+        fs::write(root.join(".gitignore"), "ModuleCache.noindex/\n.next/\n").unwrap();
+        fs::create_dir(root.join("ModuleCache.noindex")).unwrap();
+        fs::create_dir(root.join(".next")).unwrap();
+        fs::write(root.join(".next/source.ts"), "valuable source").unwrap();
+        run_git(root, &["add", "--force", ".next/source.ts"]).unwrap();
+        assert!(inventory_rebuildable_caches(root).unwrap().is_empty());
+    }
+
+    #[test]
+    fn cleanup_rejects_release_symbols_added_after_preview() {
+        let repository = fixture_repository();
+        let root = repository.path();
+        fs::write(root.join(".gitignore"), "build/\n").unwrap();
+        fs::create_dir_all(root.join("build/generated")).unwrap();
+        let preview = CleanupRequest {
+            workspace_path: root.to_string_lossy().into_owned(),
+            relative_paths: vec!["build".to_owned()],
+            confirmation: None,
+        };
+        let plan = plan_cache_cleanup_with_snapshot(&preview, &inactive_processes()).unwrap();
+        fs::create_dir(root.join("build/Release.dSYM")).unwrap();
+        fs::write(
+            root.join("build/Release.dSYM/symbols"),
+            "irreplaceable symbols",
+        )
+        .unwrap();
+        let request = CleanupRequest {
+            confirmation: Some(plan.confirmation),
+            ..preview
+        };
+        let error = execute_cache_cleanup_with_options(
+            &request,
+            &inactive_processes(),
+            &root.join("audit.jsonl"),
+        )
+        .unwrap_err();
+        assert!(error.contains("not in the verified rebuildable cache inventory"));
+        assert!(root.join("build/Release.dSYM/symbols").exists());
     }
 
     #[test]

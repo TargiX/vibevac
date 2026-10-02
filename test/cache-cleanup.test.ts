@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -40,10 +40,33 @@ async function createRepository(): Promise<string> {
   await execFileAsync("git", ["-C", root, "commit", "-m", "Initial fixture"]);
   await mkdir(resolve(root, "node_modules", "package"), { recursive: true });
   await writeFile(resolve(root, "node_modules", "package", "index.js"), "cache\n");
-  return root;
+  return realpath(root);
 }
 
 describe("cache cleanup", () => {
+  it("cannot bypass active-process protection through a workspace symlink", async () => {
+    const root = await createRepository();
+    const alias = resolve(root, "alias");
+    await symlink(root, alias);
+    await expect(planCacheCleanup(alias, ["node_modules"], {
+      processSnapshot: {available:true,workingDirectories:new Map([[root,1]]),error:null},
+    })).rejects.toThrow("running process");
+    await expect(access(resolve(root,"node_modules"))).resolves.toBeUndefined();
+  });
+
+  it("rejects a broad build plan if release symbols appear after preview", async () => {
+    const root = await createRepository();
+    await writeFile(resolve(root, ".gitignore"), "build/\nnode_modules/\n");
+    await mkdir(resolve(root, "build", "generated"), {recursive: true});
+    await planCacheCleanup(root, ["build"], {processSnapshot:noActiveProcesses});
+    await mkdir(resolve(root, "build", "Release.dSYM"));
+    await writeFile(resolve(root, "build", "Release.dSYM", "symbols"), "irreplaceable symbols");
+    await expect(executeCacheCleanup(root, ["build"], {
+      processSnapshot:noActiveProcesses, auditPath:resolve(root, "audit.jsonl"),
+    })).rejects.toThrow("not in the verified rebuildable cache inventory");
+    expect(await readFile(resolve(root, "build", "Release.dSYM", "symbols"), "utf8")).toBe("irreplaceable symbols");
+  });
+
   it("removes only a revalidated selected cache and writes an audit record", async () => {
     const root = await createRepository();
     const auditPath = resolve(root, "audit", "events.jsonl");

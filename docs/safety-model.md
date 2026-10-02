@@ -115,6 +115,17 @@ A cache directory must:
 4. resolve inside the workspace canonical path;
 5. still be present in a fresh inventory immediately before removal.
 
+It must also contain no tracked files. Compiler caches such as
+`ModuleCache.noindex` require Xcode DerivedData evidence from a regular,
+bounded-size `info.plist`; a familiar cache name alone is insufficient.
+Native compiler caches are separate targets, including when they are nested
+under a generic `build` directory. Broad build-output candidates are checked
+for nested Git repositories, Xcode DerivedData, `Products`, release archives,
+dSYMs, IPAs, and `.xcresult` bundles. Such containers are retained and traversed
+for narrower candidates. Artifact directories themselves are never traversed
+for cleanup. This check is bounded and fails closed on unreadable or overly
+large/deep contents; it never accepts a partly inspected build directory.
+
 `node_modules` also requires a recognized lockfile at the repository root.
 
 The desktop cleanup slider can prepare four increasingly broad plans: caches
@@ -130,6 +141,12 @@ process has a current working directory inside the workspace.
 Every completed or partial operation is appended to
 `~/.vibevac/audit.jsonl`. Cache cleanup preserves the workspace, source,
 branch, and Git history.
+
+The CLI `clean` command defaults to a preview. It requires an explicit exact
+workspace and either selected `--cache` paths or `--all` for that workspace.
+Deletion additionally requires `--execute` and the exact `--confirm` phrase
+from the preview. Execution repeats the inventory and process checks and uses
+the same audited cleanup service as the dashboard.
 
 Batch cleanup is a sequence of independent workspace transactions. Each one is
 revalidated immediately before removal and produces its own audit entry. If a

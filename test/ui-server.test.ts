@@ -133,5 +133,7 @@ describe("local UI server", () => {
     expect(await readFile(fixture.auditPath, "utf8")).toContain(
       '"action":"cache-cleanup"',
     );
-  });
+  // This integration test invokes real Git, du and lsof several times.
+  // Busy hosts can exceed Vitest's five-second default without a failed check.
+  }, 30_000);
 });
