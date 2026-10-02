@@ -113,6 +113,7 @@ const filter = ref<Filter>("all");
 const sortKey = ref<SortKey>("reclaimable");
 const sortDirection = ref<SortDirection>("desc");
 const cleanupScope = ref<CleanupScope>("cache");
+const forceWorktreeRemoval = ref(false);
 const cleanupLevelIndex = ref<CleanupLevelIndex>(loadCleanupLevel());
 const expandedPaths = ref(new Set<string>());
 const selectedCaches = ref<Record<string, string[]>>({});
@@ -177,7 +178,7 @@ const cacheReadyWorkspaces = computed(() =>
 
 const worktreeReadyWorkspaces = computed(() =>
   [...(report.value?.workspaces ?? [])]
-    .filter((workspace) => isWorkspaceInWorktreeLevel(workspace, currentCleanupLevel.value))
+    .filter((workspace) => isWorkspaceInWorktreeLevel(workspace, currentCleanupLevel.value, Date.now(), forceWorktreeRemoval.value))
     .sort(
       (left, right) =>
         (right.sizeBytes ?? 0) - (left.sizeBytes ?? 0) ||
@@ -202,7 +203,7 @@ const worktreeProtectedCount = computed(() =>
 const worktreeProtectionSummary = computed(() => {
   const counts = new Map<string, number>();
   for (const workspace of report.value?.workspaces ?? []) {
-    if (!worktreeRemovalBlocker(workspace, currentCleanupLevel.value)) continue;
+    if (!worktreeRemovalBlocker(workspace, currentCleanupLevel.value, Date.now(), forceWorktreeRemoval.value)) continue;
     const git = workspace.git;
     const reason = git?.kind === "standalone-repository" ? "Standalone repositories"
       : workspace.activeProcessCount && workspace.activeProcessCount > 0 ? "Active workspaces"
@@ -272,7 +273,9 @@ const worktreePlanBytes = computed(() =>
 );
 
 const requiredWorktreeConfirmation = computed(() =>
-  worktreePlans.value.length > 0
+  worktreePlans.value.some((plan) => plan.force)
+    ? worktreePlans.value.map((plan) => plan.confirmation).join("; ")
+    : worktreePlans.value.length > 0
     ? `REMOVE ${worktreePlans.value.length} ${
         worktreePlans.value.length === 1 ? "WORKTREE" : "WORKTREES"
       }`
@@ -510,6 +513,7 @@ function setCleanupLevel(value: number): void {
 function setCleanupScope(scope: CleanupScope): void {
   if (cleanupScope.value === scope) return;
   cleanupScope.value = scope;
+  forceWorktreeRemoval.value = false;
   error.value = null;
   cleanupPlans.value = [];
   cleanupPreviewSkipped.value = [];
@@ -521,6 +525,16 @@ function setCleanupScope(scope: CleanupScope): void {
   selectedWorktrees.value = new Set();
   worktreePlans.value = [];
   worktreeConfirmation.value = "";
+}
+
+function setForceWorktreeRemoval(enabled: boolean): void {
+  forceWorktreeRemoval.value = enabled;
+  selectedWorktrees.value = new Set();
+  worktreePlans.value = [];
+  worktreePreviewSkipped.value = [];
+  worktreeConfirmation.value = "";
+  error.value = null;
+  filter.value = "ready";
 }
 
 function isWorktreeSelected(path: string): boolean {
@@ -703,6 +717,7 @@ async function reviewWorktreeSelection(): Promise<void> {
       workspaces.map((workspace) => ({
         workspacePath: workspace.path,
         minimumInactiveDays,
+        force: forceWorktreeRemoval.value,
       })),
     );
     if (batch.plans.length + batch.skipped.length !== workspaces.length) {
@@ -887,6 +902,9 @@ async function executeWorktreeRemoval(): Promise<void> {
           workspacePath: plan.workspacePath,
           minimumInactiveDays,
           confirmation: plan.confirmation,
+          force: plan.force,
+          reviewedHead: plan.head,
+          reviewedWarnings: plan.warnings,
         });
         worktreeCount += 1;
         reclaimedBytes += result.reclaimedBytes;
@@ -1145,7 +1163,7 @@ onUnmounted(stopScanTimer);
         <div class="cleanup-callout-copy">
           <span>
             {{ cleanupScope === "worktree" ? "Worktree removal" : "Cleanup level" }} ·
-            {{ currentCleanupLevel.label }}
+            {{ forceWorktreeRemoval ? "Manual override" : currentCleanupLevel.label }}
           </span>
           <template v-if="cleanupScope === 'cache'">
             <h2 v-if="cleanupReadyWorkspaces.length">
@@ -1172,7 +1190,21 @@ onUnmounted(stopScanTimer);
               {{ cleanupReadyWorkspaces.length }} of {{ report.workspaces.length }} workspaces are
               eligible
             </h2>
-            <p>
+            <label class="force-worktree-toggle">
+              <input
+                type="checkbox"
+                :checked="forceWorktreeRemoval"
+                :disabled="previewingWorktrees || removingWorktrees"
+                @change="setForceWorktreeRemoval(($event.target as HTMLInputElement).checked)"
+              />
+              Allow removal of protected worktrees
+            </label>
+            <p v-if="forceWorktreeRemoval">
+              Manual override ignores age, merge, remote, local-file, and process protections.
+              Local and ignored files will be permanently deleted. Running tasks may break;
+              VibeVac will not stop them. Select each worktree and review its risks before confirming.
+            </p>
+            <p v-else>
               {{ currentCleanupLevel.label }} changes only the age gate to
               {{ currentCleanupLevel.shortLabel }}. Clean, synced, merged, linked-worktree, and
               process checks stay enforced; {{ worktreeProtectedCount }} remain protected.
@@ -1228,6 +1260,7 @@ onUnmounted(stopScanTimer);
         </button>
 
         <div
+          v-if="!forceWorktreeRemoval"
           class="cleanup-level-control"
           :style="{
             '--cleanup-progress': `${(cleanupLevelIndex / (currentCleanupLevels.length - 1)) * 100}%`,
@@ -1656,20 +1689,20 @@ onUnmounted(stopScanTimer);
                   <div class="cache-panel-heading">
                     <div>
                       <h4>Entire worktree</h4>
-                      <p>The checkout can only enter a plan after every proof passes.</p>
+                      <p>{{ forceWorktreeRemoval ? "Manual override requires explicit risk review and confirmation." : "The checkout can only enter a plan after every proof passes." }}</p>
                     </div>
                     <span>
                       {{ cleanupReadyPaths.has(workspace.path) ? "Eligible" : "Blocked" }}
                     </span>
                   </div>
                   <div
-                    v-if="worktreeRemovalBlocker(workspace, currentCleanupLevel)"
+                    v-if="worktreeRemovalBlocker(workspace, currentCleanupLevel, Date.now(), forceWorktreeRemoval)"
                     class="worktree-blocker-summary"
                   >
                     <AlertTriangle :size="15" />
                     <div>
                       <strong>Blocked because</strong>
-                      <span>{{ worktreeRemovalBlocker(workspace, currentCleanupLevel) }}</span>
+                      <span>{{ worktreeRemovalBlocker(workspace, currentCleanupLevel, Date.now(), forceWorktreeRemoval) }}</span>
                     </div>
                   </div>
                   <div class="worktree-proof-list">
@@ -1703,8 +1736,10 @@ onUnmounted(stopScanTimer);
                     <span>Branch, remote refs, and common Git history remain outside the checkout.</span>
                   </div>
                   <p class="cleanup-blocker">
-                    <AlertTriangle :size="14" /> A fresh preview also blocks unknown ignored files
-                    before removal can be confirmed.
+                    <AlertTriangle :size="14" />
+                    {{ forceWorktreeRemoval
+                      ? "Manual override will permanently delete local and ignored files, including audio, archives, and reports."
+                      : "A fresh preview also blocks unknown ignored files before removal can be confirmed." }}
                   </p>
                 </div>
               </div>
@@ -1911,7 +1946,11 @@ onUnmounted(stopScanTimer);
             <X :size="17" />
           </button>
         </div>
-        <p class="modal-intro">
+        <p v-if="worktreePlans.some((plan) => plan.force)" class="modal-intro">
+          Manual override is enabled. The listed protections are bypassed for these exact checkouts.
+          Uncommitted work and ignored files cannot be restored by recreating the branch.
+        </p>
+        <p v-else class="modal-intro">
           VibeVac independently rechecked every selection. This plan removes each entire checkout,
           including its verified rebuildable storage, while retaining the shared repository.
         </p>
@@ -1947,7 +1986,7 @@ onUnmounted(stopScanTimer);
             <div>
               <strong>{{ workspaceName(plan.workspacePath) }}</strong>
               <span>
-                {{ plan.branch }} · {{ plan.inactiveDays }} days inactive ·
+                {{ plan.branch }} · {{ plan.inactiveDays === null ? "activity unknown" : `${plan.inactiveDays} days inactive` }} ·
                 {{ compactPath(plan.workspacePath) }}
               </span>
             </div>
@@ -1955,11 +1994,27 @@ onUnmounted(stopScanTimer);
           </div>
         </div>
 
+        <div v-for="plan in worktreePlans.filter((item) => item.force)" :key="`risks-${plan.workspacePath}`" class="worktree-removal-warning">
+          <AlertTriangle :size="18" />
+          <div>
+            <strong>{{ workspaceName(plan.workspacePath) }} — protections bypassed</strong>
+            <span>{{ plan.workspacePath }}</span>
+            <ul v-if="plan.warnings.length">
+              <li v-for="warning in plan.warnings" :key="warning">{{ warning }}</li>
+            </ul>
+            <span v-else>No policy blockers were found; manual override is still explicitly confirmed.</span>
+          </div>
+        </div>
+
         <div class="worktree-removal-warning">
           <AlertTriangle :size="18" />
           <div>
             <strong>The full checkout directories will disappear.</strong>
-            <span>
+            <span v-if="worktreePlans.some((plan) => plan.force)">
+              This permanently deletes all files inside the selected checkouts, including local
+              work, audio, archives, and reports. Shared Git history survives; unsaved files do not.
+            </span>
+            <span v-else>
               This includes tracked source copies and verified ignored caches inside them. Files
               with unproven safety would have blocked this preview.
             </span>

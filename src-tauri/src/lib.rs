@@ -1,8 +1,8 @@
 mod core;
 
 use core::{
-    BatchPreview, CacheCleanupPlan, CacheCleanupResult, CleanupRequest, ScanReport, WorktreeRemovalPlan,
-    WorktreeRemovalRequest, WorktreeRemovalResult,
+    BatchPreview, CacheCleanupPlan, CacheCleanupResult, CleanupRequest, ScanReport,
+    WorktreeRemovalPlan, WorktreeRemovalRequest, WorktreeRemovalResult,
 };
 
 #[tauri::command]

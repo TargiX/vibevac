@@ -113,8 +113,9 @@ export function isWorkspaceInWorktreeLevel(
   >,
   level: CleanupLevel,
   now = Date.now(),
+  force = false,
 ): boolean {
-  return worktreeRemovalBlocker(workspace, level, now) === null;
+  return worktreeRemovalBlocker(workspace, level, now, force) === null;
 }
 
 export function worktreeRemovalBlocker(
@@ -124,11 +125,17 @@ export function worktreeRemovalBlocker(
   >,
   level: CleanupLevel,
   now = Date.now(),
+  force = false,
 ): string | null {
   const git = workspace.git;
   if (!git) return workspace.reasons[0] ?? "Git inspection is unavailable.";
   if (git.kind !== "linked-worktree") {
     return "Standalone repositories are protected from entire-worktree removal.";
+  }
+  if (force) {
+    if (!git.branch) return "An attached branch is required to preserve Git history.";
+    if (workspace.sizeBytes === null) return "The worktree size could not be measured.";
+    return null;
   }
   if (workspace.activeProcessCount === null) {
     return "The active-process check is unavailable.";

@@ -40,6 +40,22 @@ function workspace(
 }
 
 describe("cleanup policy", () => {
+  it("explicit override admits protected linked worktrees while preserving structural limits", () => {
+    const base = workspace(0);
+    const protectedWorkspace = {
+      ...base,
+      git: { ...base.git!, kind: "linked-worktree" as const, upstream: null, dirtyEntries: 2, ahead: 3, mergedIntoDefault: false },
+      activeProcessCount: 4,
+      recommendation: "protect" as const,
+      reasons: ["local changes"],
+      sizeBytes: 1000,
+    };
+    expect(isWorkspaceInWorktreeLevel(protectedWorkspace, WORKTREE_CLEANUP_LEVELS[0]!, NOW)).toBe(false);
+    expect(isWorkspaceInWorktreeLevel(protectedWorkspace, WORKTREE_CLEANUP_LEVELS[0]!, NOW, true)).toBe(true);
+    expect(isWorkspaceInWorktreeLevel({ ...protectedWorkspace, git: base.git }, WORKTREE_CLEANUP_LEVELS[0]!, NOW, true)).toBe(false);
+    expect(isWorkspaceInWorktreeLevel({ ...protectedWorkspace, git: { ...protectedWorkspace.git, branch: null } }, WORKTREE_CLEANUP_LEVELS[0]!, NOW, true)).toBe(false);
+    expect(isWorkspaceInWorktreeLevel({ ...protectedWorkspace, sizeBytes: null }, WORKTREE_CLEANUP_LEVELS[0]!, NOW, true)).toBe(false);
+  });
   it("reserves destructive styling for entire-worktree removal", () => {
     expect(CLEANUP_LEVELS.map((level) => cleanupPresentationTone("cache", level))).toEqual([
       "careful",

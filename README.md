@@ -111,8 +111,14 @@ other verified workspaces from entering the review.
 
 Complete worktree removal is a separate operation with a much higher bar. The
 worktree must be registered, clean, synced, merged, old enough, process-free,
-and free of ignored data outside the narrow rebuildable allowlist. Standalone
-repositories are never eligible.
+and free of ignored data outside the narrow rebuildable allowlist by default.
+An explicit, session-only **Allow removal of protected worktrees** checkbox
+bypasses age, merge, remote, local-file, and process protections. Each checkout
+still needs manual selection, a fresh risk preview, and its exact `FORCE REMOVE`
+confirmation. Local and ignored files are permanently deleted; running tasks
+may break and are never stopped automatically. Shared Git history and branches
+remain, including unpublished commits. Standalone repositories, detached
+checkouts, and parents containing nested registered worktrees stay protected.
 
 ## 📍 Where it looks
 

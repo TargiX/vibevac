@@ -20,6 +20,9 @@ interface ExecuteCleanupRequest extends CleanupRequest {
 }
 
 export interface WorktreeRemovalRequest {
+  force?: boolean;
+  reviewedHead?: string;
+  reviewedWarnings?: string[];
   workspacePath: string;
   minimumInactiveDays: number;
   confirmation?: string;

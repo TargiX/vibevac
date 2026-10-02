@@ -2123,6 +2123,28 @@ main {
   background: rgba(255, 69, 58, 0.1);
 }
 
+.force-worktree-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.force-worktree-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--danger, #ef4444);
+}
+
+.worktree-removal-warning ul {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .worktree-removal-warning strong,
 .worktree-removal-warning span {
   display: block;

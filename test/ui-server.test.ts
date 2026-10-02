@@ -17,6 +17,7 @@ import type {
   CacheCleanupPlan,
   CacheCleanupResult,
   ScanReport,
+  WorktreeRemovalPlan,
 } from "../src/domain/types.js";
 import { startUiServer, type UiServerHandle } from "../src/server/ui-server.js";
 
@@ -70,6 +71,31 @@ async function createFixture(): Promise<{
 }
 
 describe("local UI server", () => {
+  it("requires explicit boolean override and reviewed risks for whole-worktree deletion", async () => {
+    const fixture = await createFixture();
+    const worktree = resolve(fixture.root, "..", "linked");
+    await execFileAsync("git", ["-C", fixture.root, "worktree", "add", "-b", "local/unsynced", worktree]);
+    await writeFile(resolve(worktree, "source.ts"), "local work\n");
+    const server = await startUiServer({ openBrowser: false, roots: [], staticDirectory: fixture.staticDirectory, auditPath: fixture.auditPath });
+    servers.push(server);
+    const headers = { "Content-Type": "application/json", "X-VibeVac-Token": server.token, Origin: server.url };
+    const request = { workspacePath: worktree, minimumInactiveDays: 14, force: true };
+    const post = (route: string, body: unknown) => fetch(`${server.url}/api/worktree/${route}`, { method: "POST", headers, body: JSON.stringify(body) });
+    expect((await post("preview", { ...request, force: "true" })).status).toBe(400);
+    expect((await post("preview", { ...request, force: false })).status).toBe(400);
+    const response = await post("preview", request);
+    expect(response.status).toBe(200);
+    const plan = await response.json() as WorktreeRemovalPlan;
+    expect(plan.force).toBe(true);
+    expect(plan.warnings.join(" ")).toContain("uncommitted");
+    expect((await post("remove", { ...request, confirmation: plan.confirmation })).status).toBe(400);
+    await expect(access(worktree)).resolves.toBeUndefined();
+    const result = await post("remove", { ...request, confirmation: plan.confirmation, reviewedHead: plan.head, reviewedWarnings: plan.warnings });
+    expect(result.status).toBe(200);
+    await expect(access(worktree)).rejects.toThrow();
+    await expect(access(resolve(fixture.root, "source.ts"))).resolves.toBeUndefined();
+  }, 30_000);
+
   it("requires a session token and cleans only a revalidated fixture cache", async () => {
     const fixture = await createFixture();
     const server = await startUiServer({

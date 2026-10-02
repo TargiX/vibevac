@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => false, invoke: vi.fn() }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
-import { previewBatchCacheCleanup, previewWorktreeRemovals } from "../ui/src/backend.js";
+import { previewBatchCacheCleanup, previewWorktreeRemovals, removeWorktree } from "../ui/src/backend.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -21,6 +21,15 @@ function previewResponses() {
 }
 
 describe("batch preview isolation", () => {
+  it("sends explicit force opt-in and reviewed risks through the browser backend", async () => {
+    previewResponses();
+    const request = { workspacePath: "/idle", minimumInactiveDays: 14, force: true };
+    await previewWorktreeRemovals([request]);
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body))).toEqual(request);
+    const execution = { ...request, confirmation: "FORCE REMOVE idle", reviewedHead: "abc", reviewedWarnings: ["Local work will be lost."] };
+    await removeWorktree(execution);
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[1]?.[1]?.body))).toEqual(execution);
+  });
   it("keeps idle cache plans when another workspace becomes active after scanning", async () => {
     previewResponses();
     const result = await previewBatchCacheCleanup([

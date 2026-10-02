@@ -188,11 +188,17 @@ fn partition_previews<T>(
     paths: impl Iterator<Item = String>,
     results: Vec<Result<T, String>>,
 ) -> BatchPreview<T> {
-    let mut batch = BatchPreview { plans: Vec::new(), skipped: Vec::new() };
+    let mut batch = BatchPreview {
+        plans: Vec::new(),
+        skipped: Vec::new(),
+    };
     for (workspace_path, result) in paths.zip(results) {
         match result {
             Ok(plan) => batch.plans.push(plan),
-            Err(reason) => batch.skipped.push(PreviewSkip { workspace_path, reason }),
+            Err(reason) => batch.skipped.push(PreviewSkip {
+                workspace_path,
+                reason,
+            }),
         }
     }
     batch
@@ -221,20 +227,28 @@ pub(crate) struct WorktreeRemovalRequest {
     workspace_path: String,
     minimum_inactive_days: u64,
     #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    reviewed_head: Option<String>,
+    #[serde(default)]
+    reviewed_warnings: Option<Vec<String>>,
+    #[serde(default)]
     confirmation: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorktreeRemovalPlan {
+    force: bool,
+    warnings: Vec<String>,
     workspace_path: String,
     size_bytes: u64,
     branch: String,
     head: String,
-    upstream: String,
-    default_branch: String,
-    last_activity_at: String,
-    inactive_days: u64,
+    upstream: Option<String>,
+    default_branch: Option<String>,
+    last_activity_at: Option<String>,
+    inactive_days: Option<u64>,
     common_git_directory: String,
     reconstruction_command: String,
     confirmation: String,
@@ -1472,7 +1486,9 @@ pub(crate) fn plan_cache_cleanup_batch(
         .collect();
 
     Ok(partition_previews(
-        requests.iter().map(|request| request.workspace_path.clone()),
+        requests
+            .iter()
+            .map(|request| request.workspace_path.clone()),
         results,
     ))
 }
@@ -1558,6 +1574,24 @@ fn plan_worktree_removal_with_snapshot(
     if git.kind != WorkspaceKind::LinkedWorktree {
         return Err("Only registered linked Git worktrees can be removed".to_owned());
     }
+    let registry = run_git(&workspace_path, &["worktree", "list", "--porcelain", "-z"])?;
+    let registered: Vec<_> = registry
+        .split('\0')
+        .filter_map(|entry| entry.strip_prefix("worktree "))
+        .filter_map(|path| fs::canonicalize(path).ok())
+        .collect();
+    if !registered.contains(&workspace_path) {
+        return Err("The target is not a registered Git worktree".to_owned());
+    }
+    if registered
+        .iter()
+        .any(|path| path != &workspace_path && path.starts_with(&workspace_path))
+    {
+        return Err(
+            "A nested registered worktree must be handled separately before removing its parent"
+                .to_owned(),
+        );
+    }
 
     let active_process_count = count_processes_within(processes, &workspace_path);
     let classification = classify_workspace(
@@ -1566,7 +1600,7 @@ fn plan_worktree_removal_with_snapshot(
         request.minimum_inactive_days,
         now_seconds,
     );
-    if classification.recommendation != Recommendation::Candidate {
+    if !request.force && classification.recommendation != Recommendation::Candidate {
         return Err(format!(
             "Worktree removal blocked: {}",
             classification.reasons.join("; ")
@@ -1577,18 +1611,55 @@ fn plan_worktree_removal_with_snapshot(
         .branch
         .clone()
         .ok_or_else(|| "Worktree branch proof is incomplete".to_owned())?;
-    let upstream = git
-        .upstream
-        .clone()
-        .ok_or_else(|| "Worktree upstream proof is incomplete".to_owned())?;
-    let default_branch = git
-        .default_branch
-        .clone()
-        .ok_or_else(|| "Worktree default-branch proof is incomplete".to_owned())?;
-    let last_activity_at = git
-        .last_activity_at
-        .clone()
-        .ok_or_else(|| "Worktree activity proof is incomplete".to_owned())?;
+    let upstream = git.upstream.clone();
+    let default_branch = git.default_branch.clone();
+    let last_activity_at = git.last_activity_at.clone();
+    if !request.force
+        && (upstream.is_none() || default_branch.is_none() || last_activity_at.is_none())
+    {
+        return Err("Worktree removal proof is incomplete".to_owned());
+    }
+    let inactive_days = last_activity_at
+        .as_ref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| (now_seconds - value.timestamp()).max(0) as u64 / DAY_IN_SECONDS as u64);
+    let mut warnings = Vec::new();
+    if git.dirty_entries > 0 {
+        warnings.push(format!(
+            "{} uncommitted entries will be permanently deleted.",
+            git.dirty_entries
+        ));
+    }
+    if upstream.is_none() {
+        warnings.push("No upstream branch is configured.".to_owned());
+    }
+    match git.ahead {
+        None => warnings.push("Upstream synchronization is unproven.".to_owned()),
+        Some(ahead) if ahead > 0 => warnings.push(format!(
+            "{ahead} unpublished commits remain only in the shared Git repository."
+        )),
+        _ => {}
+    }
+    if !git.remote_contains_head {
+        warnings.push("Current commit recovery from a remote is unproven.".to_owned());
+    }
+    if git.merged_into_default != Some(true) {
+        warnings.push("Current commit is not proven merged into the default branch.".to_owned());
+    }
+    match active_process_count {
+        None => warnings
+            .push("Active-process inspection is unavailable; running tasks may break.".to_owned()),
+        Some(count) if count > 0 => warnings.push(format!(
+            "{count} running processes use this worktree and may break. They will not be stopped."
+        )),
+        _ => {}
+    }
+    if inactive_days.is_none_or(|age| age < request.minimum_inactive_days) {
+        warnings.push(format!(
+            "The worktree does not meet the {}-day inactivity limit.",
+            request.minimum_inactive_days
+        ));
+    }
 
     let caches = inventory_rebuildable_caches(&workspace_path)?;
     let rebuildable_paths: BTreeSet<String> = caches
@@ -1604,13 +1675,19 @@ fn plan_worktree_removal_with_snapshot(
             .collect::<Vec<_>>()
             .join(", ");
         let remainder = unknown_ignored.len().saturating_sub(3);
-        return Err(format!(
+        let reason = format!(
             "Worktree contains ignored data outside the rebuildable allowlist: {preview}{}",
             if remainder > 0 {
                 format!(" and {remainder} more")
             } else {
                 String::new()
             }
+        );
+        if !request.force {
+            return Err(reason);
+        }
+        warnings.push(format!(
+            "{reason}. These files will be permanently deleted."
         ));
     }
 
@@ -1629,10 +1706,6 @@ fn plan_worktree_removal_with_snapshot(
         return Err("Worktree Git history is stored inside the removal target".to_owned());
     }
 
-    let activity_seconds = DateTime::parse_from_rfc3339(&last_activity_at)
-        .map_err(|error| format!("Could not parse worktree activity: {error}"))?
-        .timestamp();
-    let inactive_days = (now_seconds - activity_seconds).max(0) as u64 / DAY_IN_SECONDS as u64;
     let workspace_text = workspace_path.to_string_lossy().into_owned();
     let common_git_text = common_git_directory.to_string_lossy().into_owned();
     let reconstruction_command = format!(
@@ -1643,6 +1716,8 @@ fn plan_worktree_removal_with_snapshot(
     );
 
     Ok(WorktreeRemovalPlan {
+        force: request.force,
+        warnings: if request.force { warnings } else { Vec::new() },
         workspace_path: workspace_text,
         size_bytes: disk_usage_bytes(&workspace_path)?,
         branch,
@@ -1653,7 +1728,11 @@ fn plan_worktree_removal_with_snapshot(
         inactive_days,
         common_git_directory: common_git_text,
         reconstruction_command,
-        confirmation: worktree_confirmation_for(&workspace_path),
+        confirmation: format!(
+            "{}{}",
+            if request.force { "FORCE " } else { "" },
+            worktree_confirmation_for(&workspace_path)
+        ),
     })
 }
 
@@ -1674,7 +1753,9 @@ pub(crate) fn plan_worktree_removal_batch(
         .collect();
 
     Ok(partition_previews(
-        requests.iter().map(|request| request.workspace_path.clone()),
+        requests
+            .iter()
+            .map(|request| request.workspace_path.clone()),
         results,
     ))
 }
@@ -1782,6 +1863,14 @@ fn execute_worktree_removal_with_options(
     if request.confirmation.as_deref() != Some(plan.confirmation.as_str()) {
         return Err("Confirmation text does not match the revalidated worktree plan".to_owned());
     }
+    if plan.force
+        && (request.reviewed_head.as_deref() != Some(plan.head.as_str())
+            || request.reviewed_warnings.as_deref() != Some(plan.warnings.as_slice()))
+    {
+        return Err(
+            "Force removal risks changed or were not reviewed; prepare a fresh preview".to_owned(),
+        );
+    }
 
     let mut audit_file = open_audit_file(audit_path)?;
     let completed_at = now_iso();
@@ -1806,6 +1895,8 @@ fn execute_worktree_removal_with_options(
                 "completedAt": now_iso(),
                 "workspacePath": plan.workspace_path,
                 "preservedBranch": plan.branch,
+                "force": plan.force,
+                "warnings": plan.warnings,
                 "error": error,
             }),
         );
@@ -1824,6 +1915,8 @@ fn execute_worktree_removal_with_options(
             "workspacePath": plan.workspace_path,
             "reclaimedBytes": plan.size_bytes,
             "preservedBranch": plan.branch,
+            "force": plan.force,
+            "warnings": plan.warnings,
             "head": plan.head,
             "upstream": plan.upstream,
             "reconstructionCommand": plan.reconstruction_command,
@@ -2208,18 +2301,24 @@ mod tests {
             .current_dir(active.path())
             .spawn()
             .unwrap();
-        let requests: Vec<_> = [&active, &idle].into_iter().map(|repository| CleanupRequest {
-            workspace_path: repository.path().to_string_lossy().into_owned(),
-            relative_paths: vec!["node_modules".to_owned()],
-            confirmation: None,
-        }).collect();
+        let requests: Vec<_> = [&active, &idle]
+            .into_iter()
+            .map(|repository| CleanupRequest {
+                workspace_path: repository.path().to_string_lossy().into_owned(),
+                relative_paths: vec!["node_modules".to_owned()],
+                confirmation: None,
+            })
+            .collect();
         let result = plan_cache_cleanup_batch(&requests);
         let _ = child.kill();
         let _ = child.wait();
         let batch = result.unwrap();
         assert_eq!(batch.plans.len(), 1);
         assert_eq!(batch.skipped.len(), 1);
-        assert_eq!(batch.plans[0].workspace_path, fs::canonicalize(idle.path()).unwrap().to_string_lossy());
+        assert_eq!(
+            batch.plans[0].workspace_path,
+            fs::canonicalize(idle.path()).unwrap().to_string_lossy()
+        );
         assert_eq!(batch.skipped[0].workspace_path, requests[0].workspace_path);
         assert!(batch.skipped[0].reason.contains("running process"));
         assert!(active.path().join("node_modules").exists());
@@ -2230,11 +2329,17 @@ mod tests {
     fn batch_worktree_preview_reports_each_blocker_without_aborting() {
         let first = fixture_repository();
         let second = fixture_repository();
-        let requests: Vec<_> = [&first, &second].into_iter().map(|repository| WorktreeRemovalRequest {
-            workspace_path: repository.path().to_string_lossy().into_owned(),
-            minimum_inactive_days: 14,
-            confirmation: None,
-        }).collect();
+        let requests: Vec<_> = [&first, &second]
+            .into_iter()
+            .map(|repository| WorktreeRemovalRequest {
+                workspace_path: repository.path().to_string_lossy().into_owned(),
+                minimum_inactive_days: 14,
+                force: false,
+                reviewed_head: None,
+                reviewed_warnings: None,
+                confirmation: None,
+            })
+            .collect();
         let batch = plan_worktree_removal_batch(&requests).unwrap();
         assert!(batch.plans.is_empty());
         assert_eq!(batch.skipped.len(), 2);
@@ -2303,6 +2408,9 @@ mod tests {
         let preview_request = WorktreeRemovalRequest {
             workspace_path: worktree.to_string_lossy().into_owned(),
             minimum_inactive_days: 90,
+            force: false,
+            reviewed_head: None,
+            reviewed_warnings: None,
             confirmation: None,
         };
         let plan = plan_worktree_removal_with_snapshot(
@@ -2338,6 +2446,160 @@ mod tests {
     }
 
     #[test]
+    fn force_removal_requires_review_and_preserves_unpublished_branch() {
+        let (_root, repository, worktree) = fixture_linked_worktree();
+        fs::write(worktree.join("source.ts"), "unpublished\n").unwrap();
+        run(&worktree, "git", &["add", "source.ts"]);
+        run(&worktree, "git", &["commit", "-m", "local work"]);
+        let head = run_git(&worktree, &["rev-parse", "HEAD"]).unwrap();
+        fs::write(worktree.join("source.ts"), "unsaved\n").unwrap();
+        fs::write(worktree.join(".secret"), "ignored\n").unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let request = WorktreeRemovalRequest {
+            workspace_path: worktree.to_string_lossy().into_owned(),
+            minimum_inactive_days: 90,
+            force: true,
+            reviewed_head: None,
+            reviewed_warnings: None,
+            confirmation: None,
+        };
+        let mut processes = inactive_processes();
+        processes
+            .working_directories
+            .insert(fs::canonicalize(&worktree).unwrap(), 4);
+        let plan = plan_worktree_removal_with_snapshot(&request, &processes, now).unwrap();
+        assert!(plan.force);
+        assert!(plan.confirmation.starts_with("FORCE REMOVE "));
+        let warnings = plan.warnings.join(" ");
+        assert!(warnings.contains("uncommitted"));
+        assert!(warnings.contains("4 running processes"));
+        assert!(warnings.contains("not proven merged"));
+        assert!(warnings.contains(".secret"));
+        let audit = repository.join("force-audit.jsonl");
+        let unreviewed = WorktreeRemovalRequest {
+            confirmation: Some(plan.confirmation.clone()),
+            ..request.clone()
+        };
+        assert!(
+            execute_worktree_removal_with_options(&unreviewed, &processes, &audit, now)
+                .unwrap_err()
+                .contains("not reviewed")
+        );
+        let reviewed = WorktreeRemovalRequest {
+            confirmation: Some(plan.confirmation),
+            reviewed_head: Some(plan.head),
+            reviewed_warnings: Some(plan.warnings),
+            ..request
+        };
+        let wrong_head = WorktreeRemovalRequest {
+            reviewed_head: Some("changed-head".to_owned()),
+            ..reviewed.clone()
+        };
+        assert!(
+            execute_worktree_removal_with_options(&wrong_head, &processes, &audit, now)
+                .unwrap_err()
+                .contains("risks changed")
+        );
+        processes
+            .working_directories
+            .insert(fs::canonicalize(&worktree).unwrap(), 5);
+        assert!(
+            execute_worktree_removal_with_options(&reviewed, &processes, &audit, now)
+                .unwrap_err()
+                .contains("risks changed")
+        );
+        processes
+            .working_directories
+            .insert(fs::canonicalize(&worktree).unwrap(), 4);
+        execute_worktree_removal_with_options(&reviewed, &processes, &audit, now).unwrap();
+        assert!(!worktree.exists());
+        assert_eq!(
+            run_git(&repository, &["rev-parse", "agent/old"]).unwrap(),
+            head
+        );
+        assert!(repository.join("source.ts").exists());
+        let event: serde_json::Value =
+            serde_json::from_str(fs::read_to_string(audit).unwrap().trim()).unwrap();
+        assert_eq!(event["force"], true);
+        assert_eq!(
+            event["warnings"].as_array().unwrap().len(),
+            reviewed.reviewed_warnings.unwrap().len()
+        );
+    }
+
+    #[test]
+    fn force_removal_without_remote_still_blocks_standalone_and_detached_worktrees() {
+        let (_root, repository, worktree) = fixture_linked_worktree();
+        run(&worktree, "git", &["branch", "--unset-upstream"]);
+        run(&repository, "git", &["remote", "remove", "origin"]);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let request = WorktreeRemovalRequest {
+            workspace_path: worktree.to_string_lossy().into_owned(),
+            minimum_inactive_days: 14,
+            force: true,
+            reviewed_head: None,
+            reviewed_warnings: None,
+            confirmation: None,
+        };
+        let plan =
+            plan_worktree_removal_with_snapshot(&request, &inactive_processes(), now).unwrap();
+        assert!(plan.upstream.is_none());
+        assert!(plan.warnings.join(" ").contains("remote"));
+        let standalone = WorktreeRemovalRequest {
+            workspace_path: repository.to_string_lossy().into_owned(),
+            ..request.clone()
+        };
+        assert!(
+            plan_worktree_removal_with_snapshot(&standalone, &inactive_processes(), now)
+                .unwrap_err()
+                .contains("Only registered linked")
+        );
+        run(&worktree, "git", &["checkout", "--detach"]);
+        assert!(
+            plan_worktree_removal_with_snapshot(&request, &inactive_processes(), now)
+                .unwrap_err()
+                .contains("branch")
+        );
+    }
+
+    #[test]
+    fn force_removal_blocks_parent_of_nested_registered_worktree() {
+        let (_root, repository, worktree) = fixture_linked_worktree();
+        let nested = worktree.join("nested");
+        run(
+            &repository,
+            "git",
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "agent/nested",
+                nested.to_str().unwrap(),
+            ],
+        );
+        let request = WorktreeRemovalRequest {
+            workspace_path: worktree.to_string_lossy().into_owned(),
+            minimum_inactive_days: 14,
+            force: true,
+            reviewed_head: None,
+            reviewed_warnings: None,
+            confirmation: None,
+        };
+        assert!(
+            plan_worktree_removal_with_snapshot(&request, &inactive_processes(), 0)
+                .unwrap_err()
+                .contains("nested registered worktree")
+        );
+        assert!(nested.join("source.ts").exists());
+    }
+
+    #[test]
     fn worktree_removal_blocks_unknown_ignored_data() {
         let (_root, _repository, worktree) = fixture_linked_worktree();
         fs::write(worktree.join(".secret"), "local-only\n").expect("write ignored secret");
@@ -2349,6 +2611,9 @@ mod tests {
         let request = WorktreeRemovalRequest {
             workspace_path: worktree.to_string_lossy().into_owned(),
             minimum_inactive_days: 90,
+            force: false,
+            reviewed_head: None,
+            reviewed_warnings: None,
             confirmation: None,
         };
 

@@ -27,6 +27,9 @@ const REBUILDABLE_IGNORED_FILES = new Set([
 ]);
 
 export interface WorktreeRemovalRequest {
+  force?: boolean;
+  reviewedHead?: string;
+  reviewedWarnings?: string[];
   workspacePath: string;
   minimumInactiveDays: number;
   confirmation?: string;
@@ -47,9 +50,9 @@ async function runGit(workspacePath: string, args: string[]): Promise<string> {
   return stdout.trim();
 }
 
-function confirmationFor(workspacePath: string): string {
+function confirmationFor(workspacePath: string, force: boolean): string {
   const segments = workspacePath.split(sep).filter(Boolean);
-  return `REMOVE ${segments.slice(-2).join("/")}`;
+  return `${force ? "FORCE " : ""}REMOVE ${segments.slice(-2).join("/")}`;
 }
 
 function shellQuote(value: string): string {
@@ -102,6 +105,10 @@ export async function planWorktreeRemoval(
   request: WorktreeRemovalRequest,
   options: WorktreeRemovalOptions = {},
 ): Promise<WorktreeRemovalPlan> {
+  if (request.force !== undefined && typeof request.force !== "boolean") {
+    throw new Error("Force removal must be explicitly true or false");
+  }
+  const force = request.force === true;
   if (
     !Number.isInteger(request.minimumInactiveDays) ||
     request.minimumInactiveDays < 1 ||
@@ -115,6 +122,15 @@ export async function planWorktreeRemoval(
   if (git.kind !== "linked-worktree") {
     throw new Error("Only registered linked Git worktrees can be removed");
   }
+  const registeredPaths = (await runGit(workspacePath, ["worktree", "list", "--porcelain", "-z"]))
+    .split("\0")
+    .filter((entry) => entry.startsWith("worktree "))
+    .map((entry) => entry.slice(9));
+  const registered = await Promise.all(registeredPaths.map((path) => realpath(path).catch(() => null)));
+  if (!registered.includes(workspacePath)) throw new Error("The target is not a registered Git worktree");
+  if (registered.some((path) => path !== null && isNestedPath(workspacePath, path))) {
+    throw new Error("A nested registered worktree must be handled separately before removing its parent");
+  }
 
   const processes = options.processSnapshot ?? (await inspectActiveProcesses());
   const activeProcessCount = countProcessesWithin(processes, workspacePath);
@@ -124,7 +140,7 @@ export async function planWorktreeRemoval(
     staleAfterDays: request.minimumInactiveDays,
     now,
   });
-  if (classification.recommendation !== "candidate") {
+  if (!force && classification.recommendation !== "candidate") {
     throw new Error(`Worktree removal blocked: ${classification.reasons.join("; ")}`);
   }
 
@@ -132,9 +148,26 @@ export async function planWorktreeRemoval(
   const upstream = git.upstream;
   const defaultBranch = git.defaultBranch;
   const lastActivityAt = git.lastActivityAt;
-  if (!branch || !upstream || !defaultBranch || !lastActivityAt) {
+  if (!branch) {
+    throw new Error("An attached worktree branch is required to preserve Git history");
+  }
+  if (!force && (!upstream || !defaultBranch || !lastActivityAt)) {
     throw new Error("Worktree removal proof is incomplete");
   }
+
+  const inactiveDays = lastActivityAt
+    ? Math.max(0, Math.floor((now - Date.parse(lastActivityAt)) / DAY_IN_MS))
+    : null;
+  const warnings: string[] = [];
+  if (git.dirtyEntries > 0) warnings.push(`${git.dirtyEntries} uncommitted entries will be permanently deleted.`);
+  if (!upstream) warnings.push("No upstream branch is configured.");
+  if (git.ahead === null) warnings.push("Upstream synchronization is unproven.");
+  else if (git.ahead > 0) warnings.push(`${git.ahead} unpublished commits remain only in the shared Git repository.`);
+  if (!git.remoteContainsHead) warnings.push("Current commit recovery from a remote is unproven.");
+  if (git.mergedIntoDefault !== true) warnings.push("Current commit is not proven merged into the default branch.");
+  if (activeProcessCount === null) warnings.push("Active-process inspection is unavailable; running tasks may break.");
+  else if (activeProcessCount > 0) warnings.push(`${activeProcessCount} running processes use this worktree and may break. They will not be stopped.`);
+  if (inactiveDays === null || inactiveDays < request.minimumInactiveDays) warnings.push(`The worktree does not meet the ${request.minimumInactiveDays}-day inactivity limit.`);
 
   const caches = await inventoryRebuildableCaches(workspacePath);
   const unknownIgnored = await unknownIgnoredEntries(
@@ -143,11 +176,11 @@ export async function planWorktreeRemoval(
   );
   if (unknownIgnored.length > 0) {
     const preview = unknownIgnored.slice(0, 3).join(", ");
-    throw new Error(
-      `Worktree contains ignored data outside the rebuildable allowlist: ${preview}${
+    const reason = `Worktree contains ignored data outside the rebuildable allowlist: ${preview}${
         unknownIgnored.length > 3 ? ` and ${unknownIgnored.length - 3} more` : ""
-      }`,
-    );
+      }`;
+    if (!force) throw new Error(reason);
+    warnings.push(`${reason}. These files will be permanently deleted.`);
   }
 
   const rawCommonGitDirectory = await runGit(workspacePath, [
@@ -165,15 +198,13 @@ export async function planWorktreeRemoval(
     throw new Error("Worktree Git history is stored inside the removal target");
   }
 
-  const inactiveDays = Math.max(
-    0,
-    Math.floor((now - Date.parse(lastActivityAt)) / DAY_IN_MS),
-  );
   const reconstructionCommand = `git --git-dir=${shellQuote(
     commonGitDirectory,
   )} worktree add ${shellQuote(workspacePath)} ${shellQuote(branch)}`;
 
   return {
+    force,
+    warnings: force ? warnings : [],
     workspacePath,
     sizeBytes: await diskUsageBytes(workspacePath),
     branch,
@@ -184,7 +215,7 @@ export async function planWorktreeRemoval(
     inactiveDays,
     commonGitDirectory,
     reconstructionCommand,
-    confirmation: confirmationFor(workspacePath),
+    confirmation: confirmationFor(workspacePath, force),
   };
 }
 
@@ -195,6 +226,10 @@ export async function executeWorktreeRemoval(
   const plan = await planWorktreeRemoval(request, options);
   if (request.confirmation !== plan.confirmation) {
     throw new Error("Confirmation text does not match the revalidated worktree plan");
+  }
+  if (plan.force && (request.reviewedHead !== plan.head ||
+      JSON.stringify(request.reviewedWarnings) !== JSON.stringify(plan.warnings))) {
+    throw new Error("Force removal risks changed or were not reviewed; prepare a fresh preview");
   }
 
   const auditPath = options.auditPath ?? resolve(homedir(), ".vibevac/audit.jsonl");
@@ -222,6 +257,8 @@ export async function executeWorktreeRemoval(
         completedAt: new Date().toISOString(),
         workspacePath: plan.workspacePath,
         preservedBranch: plan.branch,
+        force: plan.force,
+        warnings: plan.warnings,
         error: error instanceof Error ? error.message : String(error),
       })}\n`,
       "utf8",
@@ -238,6 +275,8 @@ export async function executeWorktreeRemoval(
       workspacePath: plan.workspacePath,
       reclaimedBytes: plan.sizeBytes,
       preservedBranch: plan.branch,
+      force: plan.force,
+      warnings: plan.warnings,
       head: plan.head,
       upstream: plan.upstream,
       reconstructionCommand: plan.reconstructionCommand,
