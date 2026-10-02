@@ -173,6 +173,33 @@ pub(crate) struct CacheCleanupPlan {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct PreviewSkip {
+    workspace_path: String,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct BatchPreview<T> {
+    plans: Vec<T>,
+    skipped: Vec<PreviewSkip>,
+}
+
+fn partition_previews<T>(
+    paths: impl Iterator<Item = String>,
+    results: Vec<Result<T, String>>,
+) -> BatchPreview<T> {
+    let mut batch = BatchPreview { plans: Vec::new(), skipped: Vec::new() };
+    for (workspace_path, result) in paths.zip(results) {
+        match result {
+            Ok(plan) => batch.plans.push(plan),
+            Err(reason) => batch.skipped.push(PreviewSkip { workspace_path, reason }),
+        }
+    }
+    batch
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RemovedCache {
     relative_path: String,
     size_bytes: Option<u64>,
@@ -1433,7 +1460,7 @@ pub(crate) fn plan_cache_cleanup(request: &CleanupRequest) -> Result<CacheCleanu
 
 pub(crate) fn plan_cache_cleanup_batch(
     requests: &[CleanupRequest],
-) -> Result<Vec<CacheCleanupPlan>, String> {
+) -> Result<BatchPreview<CacheCleanupPlan>, String> {
     if requests.is_empty() {
         return Err("Select at least one workspace".to_owned());
     }
@@ -1444,13 +1471,10 @@ pub(crate) fn plan_cache_cleanup_batch(
         .map(|request| plan_cache_cleanup_with_snapshot(request, &processes))
         .collect();
 
-    results
-        .into_iter()
-        .enumerate()
-        .map(|(index, result)| {
-            result.map_err(|error| format!("{}: {error}", requests[index].workspace_path))
-        })
-        .collect()
+    Ok(partition_previews(
+        requests.iter().map(|request| request.workspace_path.clone()),
+        results,
+    ))
 }
 
 fn worktree_confirmation_for(workspace_path: &Path) -> String {
@@ -1635,7 +1659,7 @@ fn plan_worktree_removal_with_snapshot(
 
 pub(crate) fn plan_worktree_removal_batch(
     requests: &[WorktreeRemovalRequest],
-) -> Result<Vec<WorktreeRemovalPlan>, String> {
+) -> Result<BatchPreview<WorktreeRemovalPlan>, String> {
     if requests.is_empty() {
         return Err("Select at least one worktree".to_owned());
     }
@@ -1649,13 +1673,10 @@ pub(crate) fn plan_worktree_removal_batch(
         .map(|request| plan_worktree_removal_with_snapshot(request, &processes, now_seconds))
         .collect();
 
-    results
-        .into_iter()
-        .enumerate()
-        .map(|(index, result)| {
-            result.map_err(|error| format!("{}: {error}", requests[index].workspace_path))
-        })
-        .collect()
+    Ok(partition_previews(
+        requests.iter().map(|request| request.workspace_path.clone()),
+        results,
+    ))
 }
 
 fn open_audit_file(path: &Path) -> Result<File, String> {
@@ -2176,6 +2197,53 @@ mod tests {
     }
 
     #[test]
+    fn batch_preview_skips_active_workspace_and_keeps_idle_plan() {
+        let active = fixture_repository();
+        let idle = fixture_repository();
+        for repository in [&active, &idle] {
+            fs::create_dir_all(repository.path().join("node_modules/pkg")).unwrap();
+        }
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .current_dir(active.path())
+            .spawn()
+            .unwrap();
+        let requests: Vec<_> = [&active, &idle].into_iter().map(|repository| CleanupRequest {
+            workspace_path: repository.path().to_string_lossy().into_owned(),
+            relative_paths: vec!["node_modules".to_owned()],
+            confirmation: None,
+        }).collect();
+        let result = plan_cache_cleanup_batch(&requests);
+        let _ = child.kill();
+        let _ = child.wait();
+        let batch = result.unwrap();
+        assert_eq!(batch.plans.len(), 1);
+        assert_eq!(batch.skipped.len(), 1);
+        assert_eq!(batch.plans[0].workspace_path, fs::canonicalize(idle.path()).unwrap().to_string_lossy());
+        assert_eq!(batch.skipped[0].workspace_path, requests[0].workspace_path);
+        assert!(batch.skipped[0].reason.contains("running process"));
+        assert!(active.path().join("node_modules").exists());
+        assert!(idle.path().join("node_modules").exists());
+    }
+
+    #[test]
+    fn batch_worktree_preview_reports_each_blocker_without_aborting() {
+        let first = fixture_repository();
+        let second = fixture_repository();
+        let requests: Vec<_> = [&first, &second].into_iter().map(|repository| WorktreeRemovalRequest {
+            workspace_path: repository.path().to_string_lossy().into_owned(),
+            minimum_inactive_days: 14,
+            confirmation: None,
+        }).collect();
+        let batch = plan_worktree_removal_batch(&requests).unwrap();
+        assert!(batch.plans.is_empty());
+        assert_eq!(batch.skipped.len(), 2);
+        assert!(batch.skipped.iter().all(|item| !item.reason.is_empty()));
+        assert!(first.path().join(".git").exists());
+        assert!(second.path().join(".git").exists());
+    }
+
+    #[test]
     fn batch_cleanup_preview_reuses_safety_checks_and_preserves_order() {
         let first = fixture_repository();
         let second = fixture_repository();
@@ -2202,7 +2270,9 @@ mod tests {
             },
         ];
 
-        let plans = plan_cache_cleanup_batch(&requests).expect("batch cleanup plan");
+        let batch = plan_cache_cleanup_batch(&requests).expect("batch cleanup plan");
+        assert!(batch.skipped.is_empty());
+        let plans = batch.plans;
 
         assert_eq!(plans.len(), 2);
         assert_eq!(

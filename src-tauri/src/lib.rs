@@ -1,7 +1,7 @@
 mod core;
 
 use core::{
-    CacheCleanupPlan, CacheCleanupResult, CleanupRequest, ScanReport, WorktreeRemovalPlan,
+    BatchPreview, CacheCleanupPlan, CacheCleanupResult, CleanupRequest, ScanReport, WorktreeRemovalPlan,
     WorktreeRemovalRequest, WorktreeRemovalResult,
 };
 
@@ -27,7 +27,7 @@ async fn preview_cache_cleanup(request: CleanupRequest) -> Result<CacheCleanupPl
 #[tauri::command]
 async fn preview_cache_cleanup_batch(
     requests: Vec<CleanupRequest>,
-) -> Result<Vec<CacheCleanupPlan>, String> {
+) -> Result<BatchPreview<CacheCleanupPlan>, String> {
     tauri::async_runtime::spawn_blocking(move || core::plan_cache_cleanup_batch(&requests))
         .await
         .map_err(|error| format!("Native batch cleanup preview task failed: {error}"))?
@@ -36,7 +36,7 @@ async fn preview_cache_cleanup_batch(
 #[tauri::command]
 async fn preview_worktree_removal_batch(
     requests: Vec<WorktreeRemovalRequest>,
-) -> Result<Vec<WorktreeRemovalPlan>, String> {
+) -> Result<BatchPreview<WorktreeRemovalPlan>, String> {
     tauri::async_runtime::spawn_blocking(move || core::plan_worktree_removal_batch(&requests))
         .await
         .map_err(|error| format!("Native worktree preview task failed: {error}"))?

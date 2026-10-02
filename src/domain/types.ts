@@ -136,3 +136,13 @@ export interface WorktreeRemovalResult {
   completedAt: string;
   auditPath: string;
 }
+
+export interface PreviewSkip {
+  workspacePath: string;
+  reason: string;
+}
+
+export interface BatchPreview<T> {
+  plans: T[];
+  skipped: PreviewSkip[];
+}

@@ -2429,3 +2429,13 @@ main {
     display: none;
   }
 }
+
+.preview-skips {
+  margin: 16px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.preview-skips summary { cursor: pointer; font-weight: 600; }
+.preview-skips p, .preview-skips li { margin-top: 8px; color: var(--text-secondary); }
+.preview-skips ul { padding-left: 20px; }

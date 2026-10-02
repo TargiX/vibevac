@@ -12,7 +12,6 @@ import {
   FolderGit2,
   FolderOpen,
   GitMerge,
-  HardDrive,
   LoaderCircle,
   Plus,
   RefreshCw,
@@ -57,6 +56,7 @@ import {
 } from "./report-state";
 import type {
   CacheCleanupResult,
+  PreviewSkip,
   CacheCleanupPlan,
   DiscoveryRoot,
   Recommendation,
@@ -118,6 +118,7 @@ const expandedPaths = ref(new Set<string>());
 const selectedCaches = ref<Record<string, string[]>>({});
 const selectedWorktrees = ref(new Set<string>());
 const cleanupPlans = ref<CacheCleanupPlan[]>([]);
+const cleanupPreviewSkipped = ref<PreviewSkip[]>([]);
 const cleanupMode = ref<CleanupMode>("single");
 const confirmation = ref("");
 const previewingCleanup = ref(false);
@@ -127,6 +128,7 @@ const cleanupItemStates = ref<BatchItemStates>({});
 const batchWorkspaceList = ref<HTMLElement | null>(null);
 const lastCleanup = ref<CleanupSummary | null>(null);
 const worktreePlans = ref<WorktreeRemovalPlan[]>([]);
+const worktreePreviewSkipped = ref<PreviewSkip[]>([]);
 const worktreeConfirmation = ref("");
 const previewingWorktrees = ref(false);
 const removingWorktrees = ref(false);
@@ -196,6 +198,22 @@ const cleanupReadyPaths = computed(
 const worktreeProtectedCount = computed(() =>
   Math.max(0, (report.value?.workspaces.length ?? 0) - worktreeReadyWorkspaces.value.length),
 );
+
+const worktreeProtectionSummary = computed(() => {
+  const counts = new Map<string, number>();
+  for (const workspace of report.value?.workspaces ?? []) {
+    if (!worktreeRemovalBlocker(workspace, currentCleanupLevel.value)) continue;
+    const git = workspace.git;
+    const reason = git?.kind === "standalone-repository" ? "Standalone repositories"
+      : workspace.activeProcessCount && workspace.activeProcessCount > 0 ? "Active workspaces"
+      : git && (git.dirtyEntries > 0 || git.untrackedEntries > 0) ? "Local changes"
+      : git && (!git.remoteContainsHead || !git.upstream || (git.ahead ?? 0) > 0) ? "Remote recovery unproven"
+      : git?.mergedIntoDefault !== true ? "Merge not proven"
+      : "Recent activity or other safety checks";
+    counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  }
+  return [...counts].sort((a, b) => b[1] - a[1]);
+});
 
 const selectedWorktreeWorkspaces = computed(() =>
   worktreeReadyWorkspaces.value.filter((workspace) =>
@@ -477,6 +495,10 @@ function setCleanupLevel(value: number): void {
   );
   cleanupLevelIndex.value = next as CleanupLevelIndex;
   localStorage.setItem(CLEANUP_LEVEL_KEY, String(next));
+  error.value = null;
+  cleanupPlans.value = [];
+  cleanupPreviewSkipped.value = [];
+  worktreePreviewSkipped.value = [];
   filter.value = "ready";
   sortKey.value = "reclaimable";
   sortDirection.value = "desc";
@@ -488,6 +510,10 @@ function setCleanupLevel(value: number): void {
 function setCleanupScope(scope: CleanupScope): void {
   if (cleanupScope.value === scope) return;
   cleanupScope.value = scope;
+  error.value = null;
+  cleanupPlans.value = [];
+  cleanupPreviewSkipped.value = [];
+  worktreePreviewSkipped.value = [];
   filter.value = "ready";
   search.value = "";
   sortKey.value = "reclaimable";
@@ -611,6 +637,7 @@ async function openCleanupReview(
       workspacePath: workspace.path,
       relativePaths,
     });
+    cleanupPreviewSkipped.value = [];
     cleanupPlans.value = [plan];
     cleanupMode.value = "single";
     confirmation.value = "";
@@ -628,18 +655,22 @@ async function reviewCleanupLevel(): Promise<void> {
   error.value = null;
 
   try {
-    const plans = await previewBatchCacheCleanup(
+    const batch = await previewBatchCacheCleanup(
       workspaces.map((workspace) => ({
         workspacePath: workspace.path,
         relativePaths: workspace.caches.map((cache) => cache.relativePath),
       })),
     );
-    if (plans.length !== workspaces.length) {
+    if (batch.plans.length + batch.skipped.length !== workspaces.length) {
       throw new Error("The preview returned an incomplete workspace plan");
     }
 
-    cleanupProgress.value = { completed: plans.length, total: workspaces.length };
-    cleanupPlans.value = plans;
+    cleanupProgress.value = { completed: workspaces.length, total: workspaces.length };
+    cleanupPreviewSkipped.value = batch.skipped;
+    cleanupPlans.value = batch.plans;
+    if (batch.plans.length === 0) {
+      error.value = `No workspaces passed the fresh safety checks. ${batch.skipped.map((item) => `${workspaceName(item.workspacePath)}: ${item.reason}`).join(" · ")}`;
+    }
     cleanupMode.value = "batch";
     confirmation.value = "";
   } catch (caught) {
@@ -668,22 +699,26 @@ async function reviewWorktreeSelection(): Promise<void> {
   error.value = null;
 
   try {
-    const plans = await previewWorktreeRemovals(
+    const batch = await previewWorktreeRemovals(
       workspaces.map((workspace) => ({
         workspacePath: workspace.path,
         minimumInactiveDays,
       })),
     );
-    if (plans.length !== workspaces.length) {
+    if (batch.plans.length + batch.skipped.length !== workspaces.length) {
       throw new Error("The preview returned an incomplete worktree plan");
     }
 
-    worktreeProgress.value = { completed: plans.length, total: workspaces.length };
-    worktreePlans.value = plans;
+    worktreeProgress.value = { completed: workspaces.length, total: workspaces.length };
+    worktreePreviewSkipped.value = batch.skipped;
+    worktreePlans.value = batch.plans;
+    if (batch.plans.length === 0) {
+      error.value = `No selected worktrees passed the fresh safety checks. ${batch.skipped.map((item) => `${workspaceName(item.workspacePath)}: ${item.reason}`).join(" · ")}`;
+    }
     worktreeConfirmation.value = "";
   } catch (caught) {
     worktreePlans.value = [];
-    error.value = `Could not prove that every selected worktree is safe to remove: ${
+    error.value = `Could not prepare the worktree review: ${
       caught instanceof Error ? caught.message : String(caught)
     }`;
   } finally {
@@ -717,6 +752,7 @@ async function reviewWorkspaceCleanup(workspace: WorkspaceReport): Promise<void>
 function closeCleanup(): void {
   if (cleaning.value) return;
   cleanupPlans.value = [];
+  cleanupPreviewSkipped.value = [];
   confirmation.value = "";
   cleanupProgress.value = { completed: 0, total: 0 };
   cleanupItemStates.value = {};
@@ -736,6 +772,7 @@ async function revealActiveCleanupItem(): Promise<void> {
 function closeWorktreeRemoval(): void {
   if (removingWorktrees.value) return;
   worktreePlans.value = [];
+  worktreePreviewSkipped.value = [];
   worktreeConfirmation.value = "";
   worktreeProgress.value = { completed: 0, total: 0 };
 }
@@ -894,7 +931,7 @@ onUnmounted(stopScanTimer);
   <div class="app-shell">
     <header class="topbar">
       <div class="brand">
-        <div class="brand-mark"><HardDrive :size="17" /></div>
+        <img class="brand-mark" src="/vibevac-icon.png" alt="" />
         <div>
           <div class="brand-name">VibeVac</div>
           <div class="brand-subtitle">Workspace storage</div>
@@ -1140,6 +1177,13 @@ onUnmounted(stopScanTimer);
               {{ currentCleanupLevel.shortLabel }}. Clean, synced, merged, linked-worktree, and
               process checks stay enforced; {{ worktreeProtectedCount }} remain protected.
             </p>
+            <p v-if="!cleanupReadyWorkspaces.length">
+              {{ worktreeProtectionSummary.map(([reason, count]) => `${count} ${reason.toLowerCase()}`).join(" · ") }}.
+              Verified caches can still be cleaned separately.
+            </p>
+            <button v-if="!cleanupReadyWorkspaces.length" class="worktree-visibility-button" @click="setCleanupScope('cache')">
+              Review rebuildable caches <ArrowRight :size="13" />
+            </button>
             <button class="worktree-visibility-button" @click="toggleWorktreeVisibility">
               {{
                 filter === "ready"
@@ -1693,6 +1737,16 @@ onUnmounted(stopScanTimer);
           cache directories below are in this plan.
         </p>
 
+        <details v-if="cleanupPreviewSkipped.length" class="preview-skips">
+          <summary>{{ cleanupPreviewSkipped.length }} {{ cleanupPreviewSkipped.length === 1 ? "workspace skipped" : "workspaces skipped" }} — the others are ready</summary>
+          <p>Skipped workspaces will stay untouched.</p>
+          <ul>
+            <li v-for="item in cleanupPreviewSkipped" :key="item.workspacePath">
+              <strong>{{ workspaceName(item.workspacePath) }}</strong>: {{ item.reason }}
+            </li>
+          </ul>
+        </details>
+
         <template v-if="cleanupMode === 'single' && primaryCleanupPlan">
           <div class="modal-workspace">
             <FolderGit2 :size="17" />
@@ -1856,6 +1910,16 @@ onUnmounted(stopScanTimer);
           VibeVac independently rechecked every selection. This plan removes each entire checkout,
           including its verified rebuildable storage, while retaining the shared repository.
         </p>
+
+        <details v-if="worktreePreviewSkipped.length" class="preview-skips">
+          <summary>{{ worktreePreviewSkipped.length }} {{ worktreePreviewSkipped.length === 1 ? "worktree skipped" : "worktrees skipped" }} — the others are ready</summary>
+          <p>Skipped worktrees will stay untouched.</p>
+          <ul>
+            <li v-for="item in worktreePreviewSkipped" :key="item.workspacePath">
+              <strong>{{ workspaceName(item.workspacePath) }}</strong>: {{ item.reason }}
+            </li>
+          </ul>
+        </details>
 
         <div class="batch-summary worktree-summary">
           <div>

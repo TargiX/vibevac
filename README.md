@@ -105,6 +105,10 @@ verified caches instead of being offered for wholesale deletion. Directories
 containing tracked files are not cleanup targets. If this bounded inspection
 cannot prove safety, the enclosing directory is retained.
 
+Batch reviews skip workspaces that fail a fresh safety check and show their
+reasons alongside the accepted plans. An active workspace does not prevent
+other verified workspaces from entering the review.
+
 Complete worktree removal is a separate operation with a much higher bar. The
 worktree must be registered, clean, synced, merged, old enough, process-free,
 and free of ignored data outside the narrow rebuildable allowlist. Standalone

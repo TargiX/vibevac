@@ -188,3 +188,10 @@ independent transactions.
 The branch, upstream refs, and common repository remain available. Each success
 or failure writes an audit entry to `~/.vibevac/audit.jsonl`; successful entries
 include a reconstruction command for recreating the checkout.
+
+Batch previews return independently verified plans and skipped workspaces with
+reasons. A workspace that becomes active or fails any other safety check is
+excluded from the review; it does not cancel the plans for other workspaces.
+Only accepted plans contribute to the confirmation count. If every selection
+is blocked, no removal plan is offered. Execution still revalidates each
+accepted workspace immediately before changing it.
