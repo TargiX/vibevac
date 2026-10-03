@@ -1564,8 +1564,10 @@ fn plan_worktree_removal_with_snapshot(
     processes: &ActiveProcessSnapshot,
     now_seconds: i64,
 ) -> Result<WorktreeRemovalPlan, String> {
-    if request.minimum_inactive_days == 0 || request.minimum_inactive_days > 3650 {
-        return Err("Worktree inactivity threshold must be between 1 and 3650 days".to_owned());
+    if (!request.force && request.minimum_inactive_days == 0)
+        || request.minimum_inactive_days > 3650
+    {
+        return Err("Worktree inactivity threshold must be between 1 and 3650 days, or 0 with explicit override".to_owned());
     }
 
     let workspace_path = fs::canonicalize(&request.workspace_path)
@@ -1654,7 +1656,9 @@ fn plan_worktree_removal_with_snapshot(
         )),
         _ => {}
     }
-    if inactive_days.is_none_or(|age| age < request.minimum_inactive_days) {
+    if request.minimum_inactive_days > 0
+        && inactive_days.is_none_or(|age| age < request.minimum_inactive_days)
+    {
         warnings.push(format!(
             "The worktree does not meet the {}-day inactivity limit.",
             request.minimum_inactive_days
@@ -2443,6 +2447,39 @@ mod tests {
         assert!(fs::read_to_string(audit_path)
             .expect("worktree audit")
             .contains("worktree-removal"));
+    }
+
+    #[test]
+    fn all_ages_threshold_requires_explicit_override() {
+        let (_root, _repository, worktree) = fixture_linked_worktree();
+        let request = WorktreeRemovalRequest {
+            workspace_path: worktree.to_string_lossy().into_owned(),
+            minimum_inactive_days: 0,
+            force: false,
+            reviewed_head: None,
+            reviewed_warnings: None,
+            confirmation: None,
+        };
+        let now_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_secs() as i64;
+        assert!(
+            plan_worktree_removal_with_snapshot(&request, &inactive_processes(), now_seconds)
+                .expect_err("normal zero threshold must fail")
+                .contains("inactivity threshold")
+        );
+        let forced = WorktreeRemovalRequest {
+            force: true,
+            ..request
+        };
+        let plan = plan_worktree_removal_with_snapshot(&forced, &inactive_processes(), now_seconds)
+            .expect("all-ages preview");
+        assert!(plan.force);
+        assert!(!plan
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("inactivity limit")));
     }
 
     #[test]

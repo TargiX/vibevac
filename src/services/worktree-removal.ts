@@ -111,10 +111,10 @@ export async function planWorktreeRemoval(
   const force = request.force === true;
   if (
     !Number.isInteger(request.minimumInactiveDays) ||
-    request.minimumInactiveDays < 1 ||
+    request.minimumInactiveDays < (force ? 0 : 1) ||
     request.minimumInactiveDays > 3650
   ) {
-    throw new Error("Worktree inactivity threshold must be between 1 and 3650 days");
+    throw new Error("Worktree inactivity threshold must be between 1 and 3650 days, or 0 with explicit override");
   }
 
   const workspacePath = await realpath(resolve(request.workspacePath));
@@ -167,7 +167,7 @@ export async function planWorktreeRemoval(
   if (git.mergedIntoDefault !== true) warnings.push("Current commit is not proven merged into the default branch.");
   if (activeProcessCount === null) warnings.push("Active-process inspection is unavailable; running tasks may break.");
   else if (activeProcessCount > 0) warnings.push(`${activeProcessCount} running processes use this worktree and may break. They will not be stopped.`);
-  if (inactiveDays === null || inactiveDays < request.minimumInactiveDays) warnings.push(`The worktree does not meet the ${request.minimumInactiveDays}-day inactivity limit.`);
+  if (request.minimumInactiveDays > 0 && (inactiveDays === null || inactiveDays < request.minimumInactiveDays)) warnings.push(`The worktree does not meet the ${request.minimumInactiveDays}-day inactivity limit.`);
 
   const caches = await inventoryRebuildableCaches(workspacePath);
   const unknownIgnored = await unknownIgnoredEntries(

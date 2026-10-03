@@ -78,6 +78,16 @@ async function fixtureWorktree(): Promise<{
 }
 
 describe("worktree removal", () => {
+  it("allows an all-ages threshold only with explicit override", async () => {
+    const fixture = await fixtureWorktree();
+    const request = { workspacePath: fixture.worktree, minimumInactiveDays: 0 };
+    const options = { processSnapshot: inactiveProcesses };
+    await expect(planWorktreeRemoval(request, options)).rejects.toThrow("inactivity threshold");
+    const plan = await planWorktreeRemoval({ ...request, force: true }, options);
+    expect(plan.force).toBe(true);
+    expect(plan.warnings.some((warning) => warning.includes("inactivity limit"))).toBe(false);
+  });
+
   it("requires a distinct force confirmation and preserves unpublished commits", async () => {
     const fixture = await fixtureWorktree();
     await writeFile(resolve(fixture.worktree, "source.ts"), "unpublished commit\n");

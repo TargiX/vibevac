@@ -157,9 +157,9 @@ const scanPresentation = computed(() =>
   }),
 );
 
-const currentCleanupLevels = computed(() => cleanupLevels(cleanupScope.value));
+const currentCleanupLevels = computed(() => cleanupLevels(cleanupScope.value, forceWorktreeRemoval.value));
 const currentCleanupLevel = computed(() =>
-  cleanupLevel(cleanupLevelIndex.value, cleanupScope.value),
+  cleanupLevel(cleanupLevelIndex.value, cleanupScope.value, forceWorktreeRemoval.value),
 );
 const currentCleanupPresentationTone = computed(() =>
   cleanupPresentationTone(cleanupScope.value, currentCleanupLevel.value),
@@ -455,7 +455,7 @@ function cachePercent(workspace: WorkspaceReport): number {
 function workspaceMeetsWorktreeAge(workspace: WorkspaceReport): boolean {
   const minimumInactiveDays = currentCleanupLevel.value.minimumInactiveDays;
   const age = activityAgeDays(workspace.git?.lastActivityAt);
-  return minimumInactiveDays !== null && age !== null && age >= minimumInactiveDays;
+  return minimumInactiveDays === 0 || (minimumInactiveDays !== null && age !== null && age >= minimumInactiveDays);
 }
 
 function setSort(key: SortKey): void {
@@ -497,7 +497,7 @@ function setCleanupLevel(value: number): void {
     Math.min(currentCleanupLevels.value.length - 1, Math.round(value)),
   );
   cleanupLevelIndex.value = next as CleanupLevelIndex;
-  localStorage.setItem(CLEANUP_LEVEL_KEY, String(next));
+  localStorage.setItem(CLEANUP_LEVEL_KEY, String(Math.min(next, 3)));
   error.value = null;
   cleanupPlans.value = [];
   cleanupPreviewSkipped.value = [];
@@ -514,6 +514,7 @@ function setCleanupScope(scope: CleanupScope): void {
   if (cleanupScope.value === scope) return;
   cleanupScope.value = scope;
   forceWorktreeRemoval.value = false;
+  cleanupLevelIndex.value = Math.min(cleanupLevelIndex.value, 3) as CleanupLevelIndex;
   error.value = null;
   cleanupPlans.value = [];
   cleanupPreviewSkipped.value = [];
@@ -529,6 +530,7 @@ function setCleanupScope(scope: CleanupScope): void {
 
 function setForceWorktreeRemoval(enabled: boolean): void {
   forceWorktreeRemoval.value = enabled;
+  if (!enabled) cleanupLevelIndex.value = Math.min(cleanupLevelIndex.value, 3) as CleanupLevelIndex;
   selectedWorktrees.value = new Set();
   worktreePlans.value = [];
   worktreePreviewSkipped.value = [];
@@ -1163,7 +1165,7 @@ onUnmounted(stopScanTimer);
         <div class="cleanup-callout-copy">
           <span>
             {{ cleanupScope === "worktree" ? "Worktree removal" : "Cleanup level" }} ·
-            {{ forceWorktreeRemoval ? "Manual override" : currentCleanupLevel.label }}
+            {{ forceWorktreeRemoval ? `Manual override · ${currentCleanupLevel.shortLabel}` : currentCleanupLevel.label }}
           </span>
           <template v-if="cleanupScope === 'cache'">
             <h2 v-if="cleanupReadyWorkspaces.length">
@@ -1200,7 +1202,10 @@ onUnmounted(stopScanTimer);
               Allow removal of protected worktrees
             </label>
             <p v-if="forceWorktreeRemoval">
-              Manual override ignores age, merge, remote, local-file, and process protections.
+              The time filter stays active: {{ currentCleanupLevel.minimumInactiveDays === 0
+                ? "all ages, including today and unknown activity"
+                : `untouched for ${currentCleanupLevel.shortLabel}` }}.
+              Manual override ignores merge, remote, local-file, and process protections.
               Local and ignored files will be permanently deleted. Running tasks may break;
               VibeVac will not stop them. Select each worktree and review its risks before confirming.
             </p>
@@ -1260,7 +1265,6 @@ onUnmounted(stopScanTimer);
         </button>
 
         <div
-          v-if="!forceWorktreeRemoval"
           class="cleanup-level-control"
           :style="{
             '--cleanup-progress': `${(cleanupLevelIndex / (currentCleanupLevels.length - 1)) * 100}%`,
@@ -1277,7 +1281,7 @@ onUnmounted(stopScanTimer);
             :aria-valuetext="`${currentCleanupLevel.label}: ${currentCleanupLevel.shortLabel}`"
             @input="setCleanupLevel(Number(($event.target as HTMLInputElement).value))"
           />
-          <div class="cleanup-level-labels">
+          <div class="cleanup-level-labels" :style="{ gridTemplateColumns: `repeat(${currentCleanupLevels.length}, 1fr)` }">
             <button
               v-for="level in currentCleanupLevels"
               :key="level.index"
@@ -1727,7 +1731,7 @@ onUnmounted(stopScanTimer);
                     <div :class="{ failed: !workspaceMeetsWorktreeAge(workspace) }">
                       <Check v-if="workspaceMeetsWorktreeAge(workspace)" :size="14" />
                       <AlertTriangle v-else :size="14" />
-                      <span>Old enough for {{ currentCleanupLevel.label }}</span>
+                      <span>{{ forceWorktreeRemoval ? "Matches time filter" : `Old enough for ${currentCleanupLevel.label}` }}</span>
                       <strong>{{ formatAge(workspace.git?.lastActivityAt) }}</strong>
                     </div>
                   </div>

@@ -113,7 +113,9 @@ Complete worktree removal is a separate operation with a much higher bar. The
 worktree must be registered, clean, synced, merged, old enough, process-free,
 and free of ignored data outside the narrow rebuildable allowlist by default.
 An explicit, session-only **Allow removal of protected worktrees** checkbox
-bypasses age, merge, remote, local-file, and process protections. Each checkout
+bypasses merge, remote, local-file, and process protections. The time slider
+still filters targets by 90, 60, 30, or 14 days; **All ages** explicitly includes
+recent and unknown activity in manual mode. Each checkout
 still needs manual selection, a fresh risk preview, and its exact `FORCE REMOVE`
 confirmation. Local and ignored files are permanently deleted; running tasks
 may break and are never stopped automatically. Shared Git history and branches

@@ -200,7 +200,12 @@ accepted workspace immediately before changing it.
 ### Explicit manual override
 
 The entire-worktree scope includes a session-only override checkbox, off by
-default and reset when leaving that scope. It bypasses age, merge, upstream,
+default and reset when leaving that scope. The time slider stays visible and
+filters eligibility by the selected inactivity threshold, including when other
+protections are overridden. Manual mode adds an explicit **All ages** endpoint
+(0 days) that includes recent and unknown activity. Zero is rejected without
+explicit override; switching override off returns that endpoint to 14 days.
+It bypasses merge, upstream,
 remote recovery, local-file, ignored-data, and active-process policies. It never
 preselects targets or stops processes. Cache cleanup protections do not change.
 

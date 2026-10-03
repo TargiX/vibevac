@@ -92,7 +92,8 @@ Git history. Standalone repositories are never removal targets.
 15. Default whole-worktree plans accept only registered linked worktrees that
     are clean, synced, merged, old enough, process-free, and free of ignored data
     outside the verified rebuildable directory and generated-file allowlist.
-    A session-only manual override bypasses these policy checks after explicit
+    A session-only manual override retains the selected time filter and adds
+    an explicit All ages endpoint. It bypasses the remaining policy checks after explicit
     target selection, risk review, and exact `FORCE REMOVE` confirmation. It
     preserves structural linked-worktree checks and never stops processes.
 16. Whole-worktree removal uses Git's worktree operation, revalidates each
