@@ -980,7 +980,7 @@ onUnmounted(stopScanTimer);
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'has-worktree-selection': cleanupScope === 'worktree' && selectedWorktreeWorkspaces.length > 0 }">
     <header class="topbar">
       <div class="brand">
         <img class="brand-mark" src="/vibevac-icon.png" alt="" />
@@ -1216,9 +1216,9 @@ onUnmounted(stopScanTimer);
           </template>
           <template v-else>
             <h2 v-if="selectedWorktreeWorkspaces.length">
-              {{ formatBytes(selectedWorktreeBytes) }} selected across
-              {{ selectedWorktreeWorkspaces.length }}
-              {{ selectedWorktreeWorkspaces.length === 1 ? "worktree" : "worktrees" }}
+              Estimated space to free: {{ formatBytes(selectedWorktreeBytes) }}
+              <small class="selection-heading-count">{{ selectedWorktreeWorkspaces.length }}
+                {{ selectedWorktreeWorkspaces.length === 1 ? "worktree" : "worktrees" }} selected</small>
             </h2>
             <h2 v-else>
               {{ cleanupReadyWorkspaces.length }} of {{ report.workspaces.length }} workspaces are
@@ -1425,6 +1425,9 @@ onUnmounted(stopScanTimer);
               <input v-model="search" type="search" placeholder="Search workspace or branch" />
             </label>
             <div class="list-toolbar-status">
+              <strong v-if="cleanupScope === 'worktree' && selectedWorktreeWorkspaces.length" class="selection-toolbar-total" aria-live="polite">
+                Estimated to free: {{ formatBytes(selectedWorktreeBytes) }}
+              </strong>
               <span v-if="filter === 'ready'">
                 <template v-if="cleanupScope === 'worktree'">
                   {{ filteredWorkspaces.length }} eligible · {{ selectedWorktreeWorkspaces.length }}
@@ -1804,6 +1807,29 @@ onUnmounted(stopScanTimer);
       </div>
     </main>
 
+    <aside
+      v-if="cleanupScope === 'worktree' && selectedWorktreeWorkspaces.length"
+      class="worktree-selection-dock"
+      aria-label="Selected worktree total"
+    >
+      <div class="selection-dock-summary" role="status" aria-live="polite" aria-atomic="true">
+        <span>Estimated space to free</span>
+        <strong>{{ formatBytes(selectedWorktreeBytes) }}</strong>
+        <small>{{ selectedWorktreeWorkspaces.length }}
+          {{ selectedWorktreeWorkspaces.length === 1 ? "worktree" : "worktrees" }} selected · Entire checkouts</small>
+      </div>
+      <div class="selection-dock-actions">
+        <button class="secondary-button" :disabled="previewingWorktrees || removingWorktrees" @click="clearWorktreeSelection">
+          Clear selection
+        </button>
+        <button class="danger-button" :disabled="previewingWorktrees || removingWorktrees" @click="reviewWorktreeSelection">
+          <LoaderCircle v-if="previewingWorktrees" :size="16" class="spinning" />
+          {{ previewingWorktrees ? "Preparing review…" : `Review ${selectedWorktreeWorkspaces.length} selected` }}
+          <ArrowRight v-if="!previewingWorktrees" :size="16" />
+        </button>
+      </div>
+    </aside>
+
     <div v-if="cleanupPlans.length" class="modal-backdrop" @click.self="closeCleanup">
       <section
         class="cleanup-modal"
@@ -2021,7 +2047,7 @@ onUnmounted(stopScanTimer);
             <strong>{{ worktreePlans.length }}</strong>
           </div>
           <div>
-            <span>Selected storage</span>
+            <span>Estimated space to free</span>
             <strong>{{ formatBytes(worktreePlanBytes) }}</strong>
           </div>
           <div>
