@@ -88,13 +88,21 @@ including:
 - `.nuxt`, `.next`, and `.svelte-kit`;
 - `.turbo` and `.parcel-cache`;
 - ignored `dist`, `build`, and `out` directories;
-- `coverage`, `playwright-report`, and `test-results`.
+- `coverage`, `playwright-report`, and `test-results`;
+- Rust `target` next to a `Cargo.toml`, with Cargo's own marker inside;
+- Python `.venv` and `venv` that contain `pyvenv.cfg`, next to a Python
+  manifest such as `pyproject.toml`, `uv.lock`, or `requirements.txt`;
+- SwiftPM `.build` next to `Package.swift`;
+- CocoaPods `Pods` with `Manifest.lock`, next to `Podfile.lock`;
+- Gradle `.gradle` next to a Gradle settings or build file;
+- Dart and Flutter `.dart_tool` next to `pubspec.yaml`;
 - Xcode `Intermediates.noindex`, `ModuleCache.noindex`, `Index.noindex`,
   `CompilationCache.noindex`, and `SDKStatCaches.noindex` inside verified
   DerivedData directories, including deeply nested `.context` builds.
 
 A name match is not enough. Every directory must also be ignored by Git.
-`node_modules` additionally requires a repository lockfile, and symlinks are
+`node_modules` additionally requires a repository lockfile, ecosystem caches
+with common names need the manifest and marker listed above, and symlinks are
 never accepted as cleanup targets.
 
 An Xcode cache also needs a regular `info.plist` identifying an Xcode workspace

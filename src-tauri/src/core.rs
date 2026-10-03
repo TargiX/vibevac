@@ -272,12 +272,27 @@ struct ActiveProcessSnapshot {
     error: Option<String>,
 }
 
+// A familiar name is not enough for ecosystem caches whose names are also
+// common words (`target`, `venv`, `.build`). Each of those must be proven to
+// belong to its tool by a manifest next to it and, where the tool writes one,
+// a marker inside it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CacheRequirement {
+    NodeLockfile,
+    CargoProject,
+    PythonVenv,
+    SwiftPackage,
+    CocoaPods,
+    GradleProject,
+    DartProject,
+}
+
 #[derive(Clone, Copy)]
 struct CacheDefinition {
     kind: CacheKind,
     name: &'static str,
     rebuild_hint: &'static str,
-    requires_node_lockfile: bool,
+    requires: Option<CacheRequirement>,
 }
 
 fn now_iso() -> String {
@@ -735,73 +750,109 @@ fn cache_definition(name: &OsStr) -> Option<CacheDefinition> {
             kind: CacheKind::ToolCache,
             name: "Xcode compiler cache",
             rebuild_hint: "Xcode recreates this compiler cache on the next build. Release archives and Products are retained.",
-            requires_node_lockfile: false,
+            requires: None,
         },
         "node_modules" => CacheDefinition {
             kind: CacheKind::Dependencies,
             name: "Installed dependencies",
             rebuild_hint: "Restore with the repository package-manager install command.",
-            requires_node_lockfile: true,
+            requires: Some(CacheRequirement::NodeLockfile),
         },
         ".nuxt" => CacheDefinition {
             kind: CacheKind::FrameworkBuild,
             name: "Nuxt build cache",
             rebuild_hint: "Nuxt recreates this directory on the next dev or build run.",
-            requires_node_lockfile: false,
+            requires: None,
         },
         ".next" => CacheDefinition {
             kind: CacheKind::FrameworkBuild,
             name: "Next.js build cache",
             rebuild_hint: "Next.js recreates this directory on the next dev or build run.",
-            requires_node_lockfile: false,
+            requires: None,
         },
         ".svelte-kit" => CacheDefinition {
             kind: CacheKind::FrameworkBuild,
             name: "SvelteKit build cache",
             rebuild_hint: "SvelteKit recreates this directory on the next dev or build run.",
-            requires_node_lockfile: false,
+            requires: None,
         },
         ".turbo" => CacheDefinition {
             kind: CacheKind::ToolCache,
             name: "Turborepo cache",
             rebuild_hint: "Turborepo recreates this cache as tasks run.",
-            requires_node_lockfile: false,
+            requires: None,
         },
         ".parcel-cache" => CacheDefinition {
             kind: CacheKind::ToolCache,
             name: "Parcel cache",
             rebuild_hint: "Parcel recreates this cache on the next build.",
-            requires_node_lockfile: false,
+            requires: None,
         },
         "dist" | "build" => CacheDefinition {
             kind: CacheKind::BuildOutput,
             name: "Build output",
             rebuild_hint: "Recreate it with the repository build command.",
-            requires_node_lockfile: false,
+            requires: None,
         },
         "out" => CacheDefinition {
             kind: CacheKind::BuildOutput,
             name: "Export output",
             rebuild_hint: "Recreate it with the repository export or build command.",
-            requires_node_lockfile: false,
+            requires: None,
+        },
+        "target" => CacheDefinition {
+            kind: CacheKind::BuildOutput,
+            name: "Rust build output",
+            rebuild_hint: "Cargo recreates this directory on the next cargo build or cargo test.",
+            requires: Some(CacheRequirement::CargoProject),
+        },
+        ".venv" | "venv" => CacheDefinition {
+            kind: CacheKind::Dependencies,
+            name: "Python virtual environment",
+            rebuild_hint: "Recreate it from the project manifest, for example uv sync or pip install -r requirements.txt.",
+            requires: Some(CacheRequirement::PythonVenv),
+        },
+        ".build" => CacheDefinition {
+            kind: CacheKind::BuildOutput,
+            name: "Swift package build output",
+            rebuild_hint: "SwiftPM recreates this directory on the next swift build.",
+            requires: Some(CacheRequirement::SwiftPackage),
+        },
+        "Pods" => CacheDefinition {
+            kind: CacheKind::Dependencies,
+            name: "CocoaPods dependencies",
+            rebuild_hint: "Restore with pod install.",
+            requires: Some(CacheRequirement::CocoaPods),
+        },
+        ".gradle" => CacheDefinition {
+            kind: CacheKind::ToolCache,
+            name: "Gradle project cache",
+            rebuild_hint: "Gradle recreates this cache on the next build.",
+            requires: Some(CacheRequirement::GradleProject),
+        },
+        ".dart_tool" => CacheDefinition {
+            kind: CacheKind::ToolCache,
+            name: "Dart tool cache",
+            rebuild_hint: "Restore with flutter pub get or dart pub get.",
+            requires: Some(CacheRequirement::DartProject),
         },
         "coverage" => CacheDefinition {
             kind: CacheKind::TestOutput,
             name: "Coverage output",
             rebuild_hint: "Recreate it by running the test coverage command.",
-            requires_node_lockfile: false,
+            requires: None,
         },
         "playwright-report" => CacheDefinition {
             kind: CacheKind::TestOutput,
             name: "Playwright report",
             rebuild_hint: "Recreate it by running the Playwright test suite.",
-            requires_node_lockfile: false,
+            requires: None,
         },
         "test-results" => CacheDefinition {
             kind: CacheKind::TestOutput,
             name: "Test results",
             rebuild_hint: "Recreate it by running the test suite.",
-            requires_node_lockfile: false,
+            requires: None,
         },
         _ => return None,
     };
@@ -922,6 +973,83 @@ fn has_node_lockfile(workspace_path: &Path) -> bool {
     .any(|name| workspace_path.join(name).exists())
 }
 
+fn is_regular_file(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+}
+
+fn any_regular_file(directory: &Path, names: &[&str]) -> bool {
+    names
+        .iter()
+        .any(|name| is_regular_file(&directory.join(name)))
+}
+
+fn has_python_manifest(directory: &Path) -> bool {
+    if any_regular_file(
+        directory,
+        &[
+            "pyproject.toml",
+            "uv.lock",
+            "poetry.lock",
+            "Pipfile",
+            "Pipfile.lock",
+            "setup.py",
+            "setup.cfg",
+        ],
+    ) {
+        return true;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        name.starts_with("requirements")
+            && name.ends_with(".txt")
+            && entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+    })
+}
+
+fn meets_requirement(
+    requirement: CacheRequirement,
+    cache_path: &Path,
+    node_lockfile_present: bool,
+) -> bool {
+    let Some(project) = cache_path.parent() else {
+        return false;
+    };
+    match requirement {
+        CacheRequirement::NodeLockfile => node_lockfile_present,
+        CacheRequirement::CargoProject => {
+            is_regular_file(&project.join("Cargo.toml"))
+                && any_regular_file(cache_path, &["CACHEDIR.TAG", ".rustc_info.json"])
+        }
+        CacheRequirement::PythonVenv => {
+            is_regular_file(&cache_path.join("pyvenv.cfg")) && has_python_manifest(project)
+        }
+        CacheRequirement::SwiftPackage => is_regular_file(&project.join("Package.swift")),
+        CacheRequirement::CocoaPods => {
+            is_regular_file(&project.join("Podfile.lock"))
+                && is_regular_file(&cache_path.join("Manifest.lock"))
+        }
+        CacheRequirement::GradleProject => any_regular_file(
+            project,
+            &[
+                "settings.gradle",
+                "settings.gradle.kts",
+                "build.gradle",
+                "build.gradle.kts",
+            ],
+        ),
+        CacheRequirement::DartProject => is_regular_file(&project.join("pubspec.yaml")),
+    }
+}
+
 fn is_ignored_by_git(workspace_path: &Path, relative_path: &Path) -> bool {
     Command::new("git")
         .arg("-C")
@@ -971,7 +1099,9 @@ fn inventory_rebuildable_caches(workspace_path: &Path) -> Result<Vec<CacheEntry>
                 continue;
             }
             if let Some(definition) = cache_definition(&entry.file_name()) {
-                if definition.requires_node_lockfile && !node_lockfile_present {
+                if definition.requires.is_some_and(|requirement| {
+                    !meets_requirement(requirement, &path, node_lockfile_present)
+                }) {
                     continue;
                 }
                 let Ok(relative_path) = path.strip_prefix(workspace_path) else {
@@ -983,8 +1113,11 @@ fn inventory_rebuildable_caches(workspace_path: &Path) -> Result<Vec<CacheEntry>
                 if is_xcode_cache_name(&entry.file_name()) && !is_xcode_cache(&path) {
                     continue;
                 }
+                // Tool-owned outputs are proven by their manifest; only generic
+                // build directories need the bounded scan for release artifacts.
                 if contains_tracked_files(workspace_path, relative_path)
                     || (definition.kind == CacheKind::BuildOutput
+                        && definition.requires.is_none()
                         && contains_protected_content(&path))
                 {
                     if depth < CACHE_MAX_DEPTH {
@@ -2217,6 +2350,88 @@ mod tests {
         fs::create_dir(root.join(".next")).unwrap();
         fs::write(root.join(".next/source.ts"), "valuable source").unwrap();
         run_git(root, &["add", "--force", ".next/source.ts"]).unwrap();
+        assert!(inventory_rebuildable_caches(root).unwrap().is_empty());
+    }
+
+    fn write_fixture_files(root: &Path, files: &[(&str, &str)]) {
+        for (path, content) in files {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+    }
+
+    #[test]
+    fn inventory_finds_tool_owned_caches_when_manifests_prove_ownership() {
+        let repository = fixture_repository();
+        let root = repository.path();
+        fs::write(
+            root.join(".gitignore"),
+            "target/\n.venv/\n.build/\nPods/\n.gradle/\n.dart_tool/\n",
+        )
+        .unwrap();
+        write_fixture_files(
+            root,
+            &[
+                ("Cargo.toml", "[package]\nname = \"fixture\"\n"),
+                ("target/.rustc_info.json", "{}"),
+                (
+                    "target/debug/deps/fixture.dSYM/Contents/Info.plist",
+                    "symbols",
+                ),
+                (
+                    "target/debug/build/fixture-1/out/generated.rs",
+                    "// generated",
+                ),
+                ("pyproject.toml", "[project]\nname = \"fixture\"\n"),
+                (".venv/pyvenv.cfg", "home = /usr/bin\n"),
+                ("Package.swift", "// swift-tools-version:5.9\n"),
+                (".build/debug/App", "binary"),
+                ("Podfile.lock", "PODS: []\n"),
+                ("Pods/Manifest.lock", "PODS: []\n"),
+                ("settings.gradle.kts", "rootProject.name = \"fixture\"\n"),
+                (".gradle/8.0/fileHashes.bin", "cache"),
+                ("pubspec.yaml", "name: fixture\n"),
+                (".dart_tool/package_config.json", "{}"),
+            ],
+        );
+
+        let mut paths: Vec<String> = inventory_rebuildable_caches(root)
+            .unwrap()
+            .into_iter()
+            .map(|cache| cache.relative_path)
+            .collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            [".build", ".dart_tool", ".gradle", ".venv", "Pods", "target"]
+        );
+    }
+
+    #[test]
+    fn inventory_does_not_trust_common_names_without_tool_proof() {
+        let repository = fixture_repository();
+        let root = repository.path();
+        fs::write(
+            root.join(".gitignore"),
+            "target/\nvenv/\n.venv/\n.build/\nPods/\n.gradle/\n.dart_tool/\n",
+        )
+        .unwrap();
+        write_fixture_files(
+            root,
+            &[
+                ("Cargo.toml", "[package]\nname = \"fixture\"\n"),
+                ("target/classes/App.class", "compiled"),
+                ("tools/venv/pyvenv.cfg", "home = /usr/bin\n"),
+                ("requirements-dev.txt", "pytest\n"),
+                (".venv/notes.md", "not an environment"),
+                (".build/output.bin", "no Package.swift"),
+                ("Pods/Manifest.lock", "no Podfile.lock"),
+                (".gradle/cache.bin", "no Gradle build file"),
+                (".dart_tool/package_config.json", "no pubspec"),
+            ],
+        );
+
         assert!(inventory_rebuildable_caches(root).unwrap().is_empty());
     }
 

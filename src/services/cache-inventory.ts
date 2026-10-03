@@ -8,11 +8,24 @@ import { diskUsageBytes } from "./disk-usage.js";
 
 const execFileAsync = promisify(execFile);
 
+// A familiar name is not enough for ecosystem caches whose names are also
+// common words (`target`, `venv`, `.build`). Each of those must be proven to
+// belong to its tool by a manifest next to it and, where the tool writes one,
+// a marker inside it.
+type CacheRequirement =
+  | "node-lockfile"
+  | "cargo-project"
+  | "python-venv"
+  | "swift-package"
+  | "cocoapods"
+  | "gradle-project"
+  | "dart-project";
+
 interface CacheDefinition {
   kind: CacheKind;
   name: string;
   rebuildHint: string;
-  requiresNodeLockfile?: boolean;
+  requires?: CacheRequirement;
 }
 
 const CACHE_DEFINITIONS = new Map<string, CacheDefinition>([
@@ -22,7 +35,7 @@ const CACHE_DEFINITIONS = new Map<string, CacheDefinition>([
       kind: "dependencies",
       name: "Installed dependencies",
       rebuildHint: "Restore with the repository package-manager install command.",
-      requiresNodeLockfile: true,
+      requires: "node-lockfile",
     },
   ],
   [
@@ -87,6 +100,69 @@ const CACHE_DEFINITIONS = new Map<string, CacheDefinition>([
       kind: "build-output",
       name: "Export output",
       rebuildHint: "Recreate it with the repository export or build command.",
+    },
+  ],
+  [
+    "target",
+    {
+      kind: "build-output",
+      name: "Rust build output",
+      rebuildHint: "Cargo recreates this directory on the next cargo build or cargo test.",
+      requires: "cargo-project",
+    },
+  ],
+  [
+    ".venv",
+    {
+      kind: "dependencies",
+      name: "Python virtual environment",
+      rebuildHint: "Recreate it from the project manifest, for example uv sync or pip install -r requirements.txt.",
+      requires: "python-venv",
+    },
+  ],
+  [
+    "venv",
+    {
+      kind: "dependencies",
+      name: "Python virtual environment",
+      rebuildHint: "Recreate it from the project manifest, for example uv sync or pip install -r requirements.txt.",
+      requires: "python-venv",
+    },
+  ],
+  [
+    ".build",
+    {
+      kind: "build-output",
+      name: "Swift package build output",
+      rebuildHint: "SwiftPM recreates this directory on the next swift build.",
+      requires: "swift-package",
+    },
+  ],
+  [
+    "Pods",
+    {
+      kind: "dependencies",
+      name: "CocoaPods dependencies",
+      rebuildHint: "Restore with pod install.",
+      requires: "cocoapods",
+    },
+  ],
+  [
+    ".gradle",
+    {
+      kind: "tool-cache",
+      name: "Gradle project cache",
+      rebuildHint: "Gradle recreates this cache on the next build.",
+      requires: "gradle-project",
+    },
+  ],
+  [
+    ".dart_tool",
+    {
+      kind: "tool-cache",
+      name: "Dart tool cache",
+      rebuildHint: "Restore with flutter pub get or dart pub get.",
+      requires: "dart-project",
     },
   ],
   [
@@ -204,6 +280,72 @@ async function hasNodeLockfile(workspacePath: string): Promise<boolean> {
   return checks.some(Boolean);
 }
 
+const PYTHON_MANIFESTS = [
+  "pyproject.toml",
+  "uv.lock",
+  "poetry.lock",
+  "Pipfile",
+  "Pipfile.lock",
+  "setup.py",
+  "setup.cfg",
+];
+
+async function isRegularFile(path: string): Promise<boolean> {
+  try {
+    const stat = await lstat(path);
+    return stat.isFile() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+async function anyRegularFile(directory: string, names: string[]): Promise<boolean> {
+  const checks = await Promise.all(names.map((name) => isRegularFile(resolve(directory, name))));
+  return checks.some(Boolean);
+}
+
+async function hasPythonManifest(directory: string): Promise<boolean> {
+  if (await anyRegularFile(directory, PYTHON_MANIFESTS)) return true;
+  try {
+    const entries = await readdir(directory, { withFileTypes: true });
+    return entries.some((entry) => entry.isFile() && /^requirements.*\.txt$/.test(entry.name));
+  } catch {
+    return false;
+  }
+}
+
+async function meetsRequirement(
+  requirement: CacheRequirement,
+  cachePath: string,
+  nodeLockfilePresent: boolean,
+): Promise<boolean> {
+  const project = dirname(cachePath);
+  switch (requirement) {
+    case "node-lockfile":
+      return nodeLockfilePresent;
+    case "cargo-project":
+      return (await isRegularFile(resolve(project, "Cargo.toml"))) &&
+        (await anyRegularFile(cachePath, ["CACHEDIR.TAG", ".rustc_info.json"]));
+    case "python-venv":
+      return (await isRegularFile(resolve(cachePath, "pyvenv.cfg"))) &&
+        (await hasPythonManifest(project));
+    case "swift-package":
+      return isRegularFile(resolve(project, "Package.swift"));
+    case "cocoapods":
+      return (await isRegularFile(resolve(project, "Podfile.lock"))) &&
+        (await isRegularFile(resolve(cachePath, "Manifest.lock")));
+    case "gradle-project":
+      return anyRegularFile(project, [
+        "settings.gradle",
+        "settings.gradle.kts",
+        "build.gradle",
+        "build.gradle.kts",
+      ]);
+    case "dart-project":
+      return isRegularFile(resolve(project, "pubspec.yaml"));
+  }
+}
+
 async function isIgnoredByGit(
   workspacePath: string,
   relativePath: string,
@@ -255,7 +397,10 @@ export async function inventoryRebuildableCaches(
         if (isProtectedArtifact(entry.name) || await exists(resolve(absolutePath, ".git"))) return;
         const definition = CACHE_DEFINITIONS.get(entry.name);
         if (definition) {
-          if (definition.requiresNodeLockfile && !nodeLockfilePresent) {
+          if (
+            definition.requires &&
+            !(await meetsRequirement(definition.requires, absolutePath, nodeLockfilePresent))
+          ) {
             return;
           }
           const relativePath = relative(workspacePath, absolutePath);
@@ -266,8 +411,11 @@ export async function inventoryRebuildableCaches(
             return;
           }
           if (XCODE_CACHE_NAMES.has(entry.name) && !(await isXcodeCache(absolutePath))) return;
+          // Tool-owned outputs are proven by their manifest; only generic build
+          // directories need the bounded scan for release artifacts.
           if (await containsTrackedFiles(workspacePath, relativePath) ||
-              (definition.kind === "build-output" && await containsProtectedContent(absolutePath))) {
+              (definition.kind === "build-output" && !definition.requires &&
+                await containsProtectedContent(absolutePath))) {
             if (depth < MAX_DEPTH) await visit(absolutePath, depth + 1);
             return;
           }
