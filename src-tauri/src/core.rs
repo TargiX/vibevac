@@ -2,10 +2,11 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -233,6 +234,8 @@ pub(crate) struct WorktreeRemovalRequest {
     #[serde(default)]
     reviewed_warnings: Option<Vec<String>>,
     #[serde(default)]
+    reviewed_ignored_fingerprint: Option<String>,
+    #[serde(default)]
     confirmation: Option<String>,
 }
 
@@ -241,6 +244,7 @@ pub(crate) struct WorktreeRemovalRequest {
 pub(crate) struct WorktreeRemovalPlan {
     force: bool,
     warnings: Vec<String>,
+    ignored_fingerprint: String,
     workspace_path: String,
     size_bytes: u64,
     branch: String,
@@ -1655,6 +1659,69 @@ fn is_known_rebuildable_ignored_file(entry: &str) -> bool {
     ) || file_name.ends_with(".tsbuildinfo")
 }
 
+fn check_nested_git(root: &Path) -> Result<(), String> {
+    let mut pending = vec![(root.to_path_buf(), 0)];
+    let mut remaining = 200_000;
+    while let Some((directory, depth)) = pending.pop() {
+        if depth > 64 {
+            return Err("Worktree inspection limit exceeded; removal is protected".to_owned());
+        }
+        for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if remaining == 0 {
+                return Err("Worktree inspection limit exceeded; removal is protected".to_owned());
+            }
+            remaining -= 1;
+            if entry.file_name() == OsStr::new(".git") {
+                if directory != root {
+                    return Err("The worktree contains a nested Git repository or checkout; handle it separately before removal".to_owned());
+                }
+                continue;
+            }
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
+            if kind.is_dir() && !kind.is_symlink() {
+                pending.push((entry.path(), depth + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ignored_fingerprint(workspace_path: &Path, entries: &[String]) -> Result<String, String> {
+    let mut entries = entries.to_vec();
+    entries.sort();
+    let mut fingerprint = Sha256::new();
+    for entry in entries {
+        let path = workspace_path.join(&entry);
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        let mut contents = Sha256::new();
+        let kind = if metadata.is_symlink() {
+            contents.update(
+                fs::read_link(&path)
+                    .map_err(|error| error.to_string())?
+                    .as_os_str()
+                    .as_encoded_bytes(),
+            );
+            "symlink"
+        } else if metadata.is_file() {
+            let mut file = File::open(&path).map_err(|error| error.to_string())?;
+            let mut buffer = [0; 64 * 1024];
+            loop {
+                let length = file.read(&mut buffer).map_err(|error| error.to_string())?;
+                if length == 0 {
+                    break;
+                }
+                contents.update(&buffer[..length]);
+            }
+            "file"
+        } else {
+            return Err("Ignored data could not be inspected; removal is protected".to_owned());
+        };
+        fingerprint.update(format!("{entry}\0{kind}\0{:x}\0", contents.finalize()).as_bytes());
+    }
+    Ok(format!("{:x}", fingerprint.finalize()))
+}
+
 fn unknown_ignored_entries(
     workspace_path: &Path,
     rebuildable_paths: &BTreeSet<String>,
@@ -1666,7 +1733,6 @@ fn unknown_ignored_entries(
             "--others",
             "--ignored",
             "--exclude-standard",
-            "--directory",
             "-z",
         ],
     )?;
@@ -1727,6 +1793,7 @@ fn plan_worktree_removal_with_snapshot(
                 .to_owned(),
         );
     }
+    check_nested_git(&workspace_path)?;
 
     let active_process_count = count_processes_within(processes, &workspace_path);
     let classification = classify_workspace(
@@ -1855,6 +1922,7 @@ fn plan_worktree_removal_with_snapshot(
     Ok(WorktreeRemovalPlan {
         force: request.force,
         warnings: if request.force { warnings } else { Vec::new() },
+        ignored_fingerprint: ignored_fingerprint(&workspace_path, &unknown_ignored)?,
         workspace_path: workspace_text,
         size_bytes: disk_usage_bytes(&workspace_path)?,
         branch,
@@ -2002,7 +2070,9 @@ fn execute_worktree_removal_with_options(
     }
     if plan.force
         && (request.reviewed_head.as_deref() != Some(plan.head.as_str())
-            || request.reviewed_warnings.as_deref() != Some(plan.warnings.as_slice()))
+            || request.reviewed_warnings.as_deref() != Some(plan.warnings.as_slice())
+            || request.reviewed_ignored_fingerprint.as_deref()
+                != Some(plan.ignored_fingerprint.as_str()))
     {
         return Err(
             "Force removal risks changed or were not reviewed; prepare a fresh preview".to_owned(),
@@ -2556,6 +2626,7 @@ mod tests {
                 force: false,
                 reviewed_head: None,
                 reviewed_warnings: None,
+                reviewed_ignored_fingerprint: None,
                 confirmation: None,
             })
             .collect();
@@ -2630,6 +2701,7 @@ mod tests {
             force: false,
             reviewed_head: None,
             reviewed_warnings: None,
+            reviewed_ignored_fingerprint: None,
             confirmation: None,
         };
         let plan = plan_worktree_removal_with_snapshot(
@@ -2673,6 +2745,7 @@ mod tests {
             force: false,
             reviewed_head: None,
             reviewed_warnings: None,
+            reviewed_ignored_fingerprint: None,
             confirmation: None,
         };
         let now_seconds = SystemTime::now()
@@ -2716,6 +2789,7 @@ mod tests {
             force: true,
             reviewed_head: None,
             reviewed_warnings: None,
+            reviewed_ignored_fingerprint: None,
             confirmation: None,
         };
         let mut processes = inactive_processes();
@@ -2744,12 +2818,25 @@ mod tests {
             confirmation: Some(plan.confirmation),
             reviewed_head: Some(plan.head),
             reviewed_warnings: Some(plan.warnings),
+            reviewed_ignored_fingerprint: Some(plan.ignored_fingerprint),
             ..request
         };
         let wrong_head = WorktreeRemovalRequest {
             reviewed_head: Some("changed-head".to_owned()),
             ..reviewed.clone()
         };
+        let missing_fingerprint = WorktreeRemovalRequest {
+            reviewed_ignored_fingerprint: None,
+            ..reviewed.clone()
+        };
+        assert!(execute_worktree_removal_with_options(
+            &missing_fingerprint,
+            &processes,
+            &audit,
+            now
+        )
+        .unwrap_err()
+        .contains("not reviewed"));
         assert!(
             execute_worktree_removal_with_options(&wrong_head, &processes, &audit, now)
                 .unwrap_err()
@@ -2797,6 +2884,7 @@ mod tests {
             force: true,
             reviewed_head: None,
             reviewed_warnings: None,
+            reviewed_ignored_fingerprint: None,
             confirmation: None,
         };
         let plan =
@@ -2841,6 +2929,7 @@ mod tests {
             force: true,
             reviewed_head: None,
             reviewed_warnings: None,
+            reviewed_ignored_fingerprint: None,
             confirmation: None,
         };
         assert!(
@@ -2849,6 +2938,171 @@ mod tests {
                 .contains("nested registered worktree")
         );
         assert!(nested.join("source.ts").exists());
+    }
+
+    #[test]
+    fn force_removal_blocks_nested_repositories_and_foreign_worktrees() {
+        for foreign in [false, true] {
+            for ignored in [false, true] {
+                let (root, _repository, worktree) = fixture_linked_worktree();
+                let request = WorktreeRemovalRequest {
+                    workspace_path: worktree.to_string_lossy().into_owned(),
+                    minimum_inactive_days: 90,
+                    force: true,
+                    reviewed_head: None,
+                    reviewed_warnings: None,
+                    reviewed_ignored_fingerprint: None,
+                    confirmation: None,
+                };
+                let processes = inactive_processes();
+                let plan = plan_worktree_removal_with_snapshot(&request, &processes, 0).unwrap();
+                let nested = worktree.join(if ignored {
+                    "node_modules/vendor/lib"
+                } else {
+                    "vendor/lib"
+                });
+                let owner = if foreign {
+                    root.path().join("foreign")
+                } else {
+                    nested.clone()
+                };
+                run(
+                    root.path(),
+                    "git",
+                    &["init", "-b", "main", owner.to_str().unwrap()],
+                );
+                run(
+                    &owner,
+                    "git",
+                    &[
+                        "-c",
+                        "user.name=Fixture",
+                        "-c",
+                        "user.email=fixture@example.test",
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        "nested history",
+                    ],
+                );
+                if foreign {
+                    run(
+                        &owner,
+                        "git",
+                        &["worktree", "add", "-b", "nested", nested.to_str().unwrap()],
+                    );
+                }
+                let head = run_git(&nested, &["rev-parse", "HEAD"]).unwrap();
+                for force in [true, false] {
+                    assert!(plan_worktree_removal_with_snapshot(
+                        &WorktreeRemovalRequest {
+                            force,
+                            ..request.clone()
+                        },
+                        &processes,
+                        0
+                    )
+                    .unwrap_err()
+                    .contains("nested Git"));
+                }
+                let reviewed = WorktreeRemovalRequest {
+                    confirmation: Some(plan.confirmation),
+                    reviewed_head: Some(plan.head),
+                    reviewed_warnings: Some(plan.warnings),
+                    reviewed_ignored_fingerprint: Some(plan.ignored_fingerprint),
+                    ..request
+                };
+                let audit = root.path().join("audit.jsonl");
+                assert!(
+                    execute_worktree_removal_with_options(&reviewed, &processes, &audit, 0)
+                        .unwrap_err()
+                        .contains("nested Git")
+                );
+                assert_eq!(run_git(&nested, &["rev-parse", "HEAD"]).unwrap(), head);
+                assert!(!audit.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn force_removal_revalidates_hidden_ignored_paths_and_contents() {
+        for change in [
+            "rename",
+            "same-size edit",
+            "ignored directory edit",
+            "leading-space name",
+        ] {
+            let (root, repository, worktree) = fixture_linked_worktree();
+            fs::write(
+                repository.join(".git/info/exclude"),
+                ".private-*\n .private-*\nprivate/\n",
+            )
+            .unwrap();
+            for name in ["a", "b", "c"] {
+                fs::write(worktree.join(format!(".private-{name}")), "old\n").unwrap();
+            }
+            fs::create_dir(worktree.join("private")).unwrap();
+            let fourth = worktree.join(if change == "ignored directory edit" {
+                "private/data"
+            } else if change == "leading-space name" {
+                " .private-d"
+            } else {
+                ".private-d"
+            });
+            fs::write(&fourth, "old\n").unwrap();
+            let request = WorktreeRemovalRequest {
+                workspace_path: worktree.to_string_lossy().into_owned(),
+                minimum_inactive_days: 0,
+                force: true,
+                reviewed_head: None,
+                reviewed_warnings: None,
+                reviewed_ignored_fingerprint: None,
+                confirmation: None,
+            };
+            let processes = inactive_processes();
+            let plan = plan_worktree_removal_with_snapshot(&request, &processes, 0).unwrap();
+            if change == "rename" {
+                fs::rename(&fourth, worktree.join(".private-e")).unwrap();
+            } else {
+                fs::write(&fourth, "new\n").unwrap();
+            }
+            let fresh = plan_worktree_removal_with_snapshot(&request, &processes, 0).unwrap();
+            assert_eq!(fresh.head, plan.head);
+            assert_eq!(fresh.warnings, plan.warnings);
+            let reviewed = WorktreeRemovalRequest {
+                confirmation: Some(plan.confirmation),
+                reviewed_head: Some(plan.head),
+                reviewed_warnings: Some(plan.warnings),
+                reviewed_ignored_fingerprint: Some(plan.ignored_fingerprint),
+                ..request
+            };
+            let audit = root.path().join("audit.jsonl");
+            assert!(
+                execute_worktree_removal_with_options(&reviewed, &processes, &audit, 0)
+                    .unwrap_err()
+                    .contains("risks changed")
+            );
+            assert!(worktree.exists());
+            assert!(!audit.exists());
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn removal_traversal_skips_symlinks_and_fails_closed() {
+        let (_root, repository, worktree) = fixture_linked_worktree();
+        std::os::unix::fs::symlink(&repository, worktree.join("external")).unwrap();
+        check_nested_git(&worktree).unwrap();
+        assert!(check_nested_git(&worktree.join("missing")).is_err());
+        let mut directory = worktree.clone();
+        for _ in 0..65 {
+            directory = directory.join("d");
+            fs::create_dir(&directory).unwrap();
+        }
+        assert!(check_nested_git(&worktree)
+            .unwrap_err()
+            .contains("inspection limit"));
+        assert!(repository.join("source.ts").exists());
     }
 
     #[test]
@@ -2866,6 +3120,7 @@ mod tests {
             force: false,
             reviewed_head: None,
             reviewed_warnings: None,
+            reviewed_ignored_fingerprint: None,
             confirmation: None,
         };
 

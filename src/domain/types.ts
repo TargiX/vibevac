@@ -117,6 +117,7 @@ export interface CacheCleanupResult {
 export interface WorktreeRemovalPlan {
   force: boolean;
   warnings: string[];
+  ignoredFingerprint: string;
   workspacePath: string;
   sizeBytes: number;
   branch: string;

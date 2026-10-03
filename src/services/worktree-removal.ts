@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { appendFile, mkdir, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { appendFile, lstat, mkdir, readdir, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -30,6 +32,7 @@ export interface WorktreeRemovalRequest {
   force?: boolean;
   reviewedHead?: string;
   reviewedWarnings?: string[];
+  reviewedIgnoredFingerprint?: string;
   workspacePath: string;
   minimumInactiveDays: number;
   confirmation?: string;
@@ -47,7 +50,7 @@ async function runGit(workspacePath: string, args: string[]): Promise<string> {
     maxBuffer: 10 * 1024 * 1024,
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
   });
-  return stdout.trim();
+  return args.includes("-z") ? stdout : stdout.trim();
 }
 
 function confirmationFor(workspacePath: string, force: boolean): string {
@@ -69,6 +72,41 @@ function isNestedPath(parentPath: string, childPath: string): boolean {
   );
 }
 
+async function checkNestedGit(root: string): Promise<void> {
+  const pending = [{ path: root, depth: 0 }];
+  let remaining = 200_000;
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    if (directory.depth > 64) throw new Error("Worktree inspection limit exceeded; removal is protected");
+    const entries = await readdir(directory.path, { withFileTypes: true });
+    for (const entry of entries) {
+      if (--remaining < 0) throw new Error("Worktree inspection limit exceeded; removal is protected");
+      if (entry.name === ".git") {
+        if (directory.path !== root) throw new Error("The worktree contains a nested Git repository or checkout; handle it separately before removal");
+        continue;
+      }
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        pending.push({ path: resolve(directory.path, entry.name), depth: directory.depth + 1 });
+      }
+    }
+  }
+}
+
+async function ignoredFingerprint(workspacePath: string, entries: string[]): Promise<string> {
+  const fingerprint = createHash("sha256");
+  for (const entry of entries.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
+    const path = resolve(workspacePath, entry);
+    const metadata = await lstat(path);
+    const contents = createHash("sha256");
+    if (metadata.isSymbolicLink()) contents.update(await readlink(path, { encoding: "buffer" }));
+    else if (metadata.isFile()) {
+      for await (const chunk of createReadStream(path)) contents.update(chunk);
+    } else throw new Error("Ignored data could not be inspected; removal is protected");
+    fingerprint.update(`${entry}\0${metadata.isSymbolicLink() ? "symlink" : "file"}\0${contents.digest("hex")}\0`);
+  }
+  return fingerprint.digest("hex");
+}
+
 async function unknownIgnoredEntries(
   workspacePath: string,
   rebuildablePaths: string[],
@@ -78,7 +116,6 @@ async function unknownIgnoredEntries(
     "--others",
     "--ignored",
     "--exclude-standard",
-    "--directory",
     "-z",
   ]);
   const ignored = output
@@ -131,6 +168,7 @@ export async function planWorktreeRemoval(
   if (registered.some((path) => path !== null && isNestedPath(workspacePath, path))) {
     throw new Error("A nested registered worktree must be handled separately before removing its parent");
   }
+  await checkNestedGit(workspacePath);
 
   const processes = options.processSnapshot ?? (await inspectActiveProcesses());
   const activeProcessCount = countProcessesWithin(processes, workspacePath);
@@ -205,6 +243,7 @@ export async function planWorktreeRemoval(
   return {
     force,
     warnings: force ? warnings : [],
+    ignoredFingerprint: await ignoredFingerprint(workspacePath, unknownIgnored),
     workspacePath,
     sizeBytes: await diskUsageBytes(workspacePath),
     branch,
@@ -228,7 +267,8 @@ export async function executeWorktreeRemoval(
     throw new Error("Confirmation text does not match the revalidated worktree plan");
   }
   if (plan.force && (request.reviewedHead !== plan.head ||
-      JSON.stringify(request.reviewedWarnings) !== JSON.stringify(plan.warnings))) {
+      JSON.stringify(request.reviewedWarnings) !== JSON.stringify(plan.warnings) ||
+      request.reviewedIgnoredFingerprint !== plan.ignoredFingerprint)) {
     throw new Error("Force removal risks changed or were not reviewed; prepare a fresh preview");
   }
 

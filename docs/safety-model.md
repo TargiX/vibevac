@@ -233,7 +233,14 @@ boolean opt-in. An override preview reports all observable risks, including
 uncommitted entries, unpublished commits, ignored paths outside verified
 caches, and running processes. The exact canonical paths appear in review;
 typed confirmation includes `FORCE REMOVE` and the identities of every target.
-Execution requires the reviewed HEAD and warnings to match a fresh preview.
+Nested `.git` entries (files, directories, or symlinks) block removal even with
+override. The check does not follow symlinks and fails closed on read errors
+or traversal limits (200,000 entries or 64 directory levels).
+
+Execution requires the reviewed HEAD, warnings, and a SHA-256 fingerprint of all
+unknown ignored file paths, types, and contents to match a fresh preview. Ignored
+directories are enumerated fully; symlinks bind their link target without reading
+external data. Verified rebuildable caches and known generated files are excluded.
 Changed risks require a new review. Audit entries record the override and risks.
 
 Structural checks still require a registered, attached linked worktree with its
