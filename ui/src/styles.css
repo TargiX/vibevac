@@ -1115,6 +1115,7 @@ main {
 
 .list-toolbar-status {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 9px;
@@ -1135,6 +1136,11 @@ main {
   font-size: var(--font-minimum);
   font-weight: 620;
   cursor: pointer;
+}
+
+.list-toolbar-status button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .list-toolbar-status button:hover {

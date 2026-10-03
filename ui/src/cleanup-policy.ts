@@ -1,6 +1,6 @@
 import type { WorkspaceReport } from "../../src/domain/types.js";
 
-export type CleanupLevelIndex = 0 | 1 | 2 | 3 | 4;
+export type CleanupLevelIndex = 0 | 1 | 2 | 3 | 4 | 5;
 export type CleanupTone = "careful" | "balanced" | "thorough" | "full";
 export type CleanupScope = "cache" | "worktree";
 export type CleanupPresentationTone =
@@ -93,6 +93,14 @@ export const MANUAL_WORKTREE_CLEANUP_LEVELS: readonly CleanupLevel[] = [
   ...WORKTREE_CLEANUP_LEVELS,
   {
     index: 4,
+    label: "One week",
+    shortLabel: "7+ days",
+    minimumInactiveDays: 7,
+    tone: "full",
+    description: "Linked worktrees untouched for at least one week.",
+  },
+  {
+    index: 5,
     label: "All ages",
     shortLabel: "Including today",
     minimumInactiveDays: 0,
@@ -211,4 +219,12 @@ export function isWorkspaceInCleanupLevel(
 
   const age = activityAgeDays(workspace.git?.lastActivityAt, now);
   return age !== null && age >= level.minimumInactiveDays;
+}
+
+export function selectVisibleWorktrees(
+  selected: ReadonlySet<string>,
+  visiblePaths: readonly string[],
+  eligiblePaths: ReadonlySet<string>,
+): Set<string> {
+  return new Set([...selected, ...visiblePaths].filter((path) => eligiblePaths.has(path)));
 }

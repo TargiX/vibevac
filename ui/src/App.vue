@@ -46,6 +46,7 @@ import {
   cleanupPresentationTone,
   isWorkspaceInCleanupLevel,
   isWorkspaceInWorktreeLevel,
+  selectVisibleWorktrees,
   worktreeRemovalBlocker,
   type CleanupLevelIndex,
   type CleanupScope,
@@ -339,6 +340,14 @@ const filteredWorkspaces = computed(() => {
     .sort(compareWorkspaces);
 });
 
+const visibleEligibleWorktrees = computed(() =>
+  filteredWorkspaces.value.filter((workspace) => cleanupReadyPaths.value.has(workspace.path)),
+);
+const allVisibleWorktreesSelected = computed(() =>
+  visibleEligibleWorktrees.value.length > 0 &&
+  visibleEligibleWorktrees.value.every((workspace) => selectedWorktrees.value.has(workspace.path)),
+);
+
 const counts = computed<Record<Recommendation, number>>(() => {
   const result: Record<Recommendation, number> = {
     candidate: 0,
@@ -551,6 +560,25 @@ function toggleWorktreeSelection(path: string): void {
   selectedWorktrees.value = next;
 }
 
+function selectAllVisibleWorktrees(): void {
+  selectedWorktrees.value = selectVisibleWorktrees(
+    selectedWorktrees.value,
+    filteredWorkspaces.value.map((workspace) => workspace.path),
+    cleanupReadyPaths.value,
+  );
+  worktreePlans.value = [];
+  worktreePreviewSkipped.value = [];
+  worktreeConfirmation.value = "";
+  error.value = null;
+}
+
+function clearWorktreeSelection(): void {
+  selectedWorktrees.value = new Set();
+  worktreePlans.value = [];
+  worktreePreviewSkipped.value = [];
+  worktreeConfirmation.value = "";
+}
+
 function toggleExpanded(path: string): void {
   const next = new Set(expandedPaths.value);
   if (next.has(path)) next.delete(path);
@@ -745,6 +773,10 @@ async function reviewWorktreeSelection(): Promise<void> {
 
 async function reviewCurrentScope(): Promise<void> {
   if (cleanupScope.value === "worktree") {
+    if (selectedWorktreeWorkspaces.value.length === 0) {
+      selectAllVisibleWorktrees();
+      return;
+    }
     await reviewWorktreeSelection();
     return;
   }
@@ -1207,7 +1239,7 @@ onUnmounted(stopScanTimer);
                 : `untouched for ${currentCleanupLevel.shortLabel}` }}.
               Manual override ignores merge, remote, local-file, and process protections.
               Local and ignored files will be permanently deleted. Running tasks may break;
-              VibeVac will not stop them. Select each worktree and review its risks before confirming.
+              VibeVac will not stop them. Select worktrees individually or select all shown, then review their risks before confirming.
             </p>
             <p v-else>
               {{ currentCleanupLevel.label }} changes only the age gate to
@@ -1236,7 +1268,7 @@ onUnmounted(stopScanTimer);
           class="cleanup-cta-button"
           :disabled="
             cleanupScope === 'worktree'
-              ? selectedWorktreeWorkspaces.length === 0 || previewingWorktrees
+              ? previewingWorktrees || removingWorktrees || (selectedWorktreeWorkspaces.length === 0 && visibleEligibleWorktrees.length === 0)
               : previewingCleanup
           "
           @click="reviewCurrentScope"
@@ -1251,7 +1283,7 @@ onUnmounted(stopScanTimer);
             {{ worktreeProgress.total === 1 ? "worktree" : "worktrees" }}
           </template>
           <template v-else-if="cleanupScope === 'worktree'">
-            {{ selectedWorktreeWorkspaces.length ? `Review ${selectedWorktreeWorkspaces.length} selected` : "Select worktrees" }}
+            {{ selectedWorktreeWorkspaces.length ? `Review ${selectedWorktreeWorkspaces.length} selected` : `Select all ${visibleEligibleWorktrees.length} shown` }}
             <ArrowRight :size="16" />
           </template>
           <template v-else-if="previewingCleanup">
@@ -1403,6 +1435,20 @@ onUnmounted(stopScanTimer);
                 </template>
               </span>
               <span v-else>{{ filteredWorkspaces.length }} shown</span>
+              <button
+                v-if="cleanupScope === 'worktree' && visibleEligibleWorktrees.length"
+                type="button"
+                :disabled="previewingWorktrees || removingWorktrees || allVisibleWorktreesSelected"
+                @click="selectAllVisibleWorktrees"
+              >
+                {{ allVisibleWorktreesSelected ? "All shown selected" : `Select all ${visibleEligibleWorktrees.length} shown` }}
+              </button>
+              <button
+                v-if="cleanupScope === 'worktree' && selectedWorktreeWorkspaces.length"
+                type="button"
+                :disabled="previewingWorktrees || removingWorktrees"
+                @click="clearWorktreeSelection"
+              >Clear selection</button>
               <button
                 v-if="cleanupScope === 'worktree'"
                 type="button"

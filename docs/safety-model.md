@@ -202,12 +202,14 @@ accepted workspace immediately before changing it.
 The entire-worktree scope includes a session-only override checkbox, off by
 default and reset when leaving that scope. The time slider stays visible and
 filters eligibility by the selected inactivity threshold, including when other
-protections are overridden. Manual mode adds an explicit **All ages** endpoint
+protections are overridden. Manual mode adds **7+ days** and an explicit **All ages** endpoint
 (0 days) that includes recent and unknown activity. Zero is rejected without
 explicit override; switching override off returns that endpoint to 14 days.
 It bypasses merge, upstream,
 remote recovery, local-file, ignored-data, and active-process policies. It never
-preselects targets or stops processes. Cache cleanup protections do not change.
+preselects targets or stops processes. **Select all shown** is an explicit user
+action that selects only eligible rows matching the current view and search;
+other rows are not added. Changing the time filter clears the selection. Cache cleanup protections do not change.
 
 Both native and web backends default `force` to false and require an explicit
 boolean opt-in. An override preview reports all observable risks, including

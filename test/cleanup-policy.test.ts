@@ -7,6 +7,7 @@ import {
   activityAgeDays,
   cleanupPresentationTone,
   cleanupLevels,
+  selectVisibleWorktrees,
   isWorkspaceInCleanupLevel,
   isWorkspaceInWorktreeLevel,
   worktreeRemovalBlocker,
@@ -59,7 +60,7 @@ describe("cleanup policy", () => {
   });
   it("keeps the selected inactivity filter when protections are overridden", () => {
     const levels = cleanupLevels("worktree", true);
-    const reports = [120, 75, 45, 20, 0, null].map((days) => {
+    const reports = [120, 75, 45, 20, 7, 6, 0, null].map((days) => {
       const base = workspace(days);
       return {
         ...base,
@@ -70,12 +71,22 @@ describe("cleanup policy", () => {
         sizeBytes: 1000,
       };
     });
-    expect(levels.map((level) => level.minimumInactiveDays)).toEqual([90, 60, 30, 14, 0]);
-    expect(levels.map((level) => reports.filter((report) => isWorkspaceInWorktreeLevel(report, level, NOW, true)).length)).toEqual([1, 2, 3, 4, 6]);
+    expect(levels.map((level) => level.minimumInactiveDays)).toEqual([90, 60, 30, 14, 7, 0]);
+    expect(levels.map((level) => reports.filter((report) => isWorkspaceInWorktreeLevel(report, level, NOW, true)).length)).toEqual([1, 2, 3, 4, 5, 8]);
     expect(cleanupLevels("worktree").length).toBe(4);
     expect(cleanupLevels("cache", true).length).toBe(4);
     expect(worktreeRemovalBlocker(reports[4]!, levels[0]!, NOW, true)).toContain("90+ days required");
-    expect(worktreeRemovalBlocker(reports[5]!, levels[0]!, NOW, true)).toBe("The last activity time is unknown.");
+    expect(worktreeRemovalBlocker(reports[7]!, levels[0]!, NOW, true)).toBe("The last activity time is unknown.");
+  });
+
+  it("bulk selection adds only eligible rows in the current view", () => {
+    const previous = new Set(["/already-selected-hidden", "/stale-ineligible"]);
+    const eligible = new Set(["/shown", "/unselected-hidden", "/already-selected-hidden"]);
+    const selected = selectVisibleWorktrees(previous, ["/shown", "/protected", "/shown"], eligible);
+    expect([...selected]).toEqual(["/already-selected-hidden", "/shown"]);
+    expect(selected.has("/unselected-hidden")).toBe(false);
+    expect([...previous]).toEqual(["/already-selected-hidden", "/stale-ineligible"]);
+    expect(selectVisibleWorktrees(new Set(), ["/protected"], eligible).size).toBe(0);
   });
 
   it("reserves destructive styling for entire-worktree removal", () => {
