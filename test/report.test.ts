@@ -4,9 +4,67 @@ import {
   formatAge,
   formatBytes,
   renderHumanReport,
+  renderScanSummary,
   renderWorkspaceInspection,
 } from "../src/render/report.js";
-import type { WorkspaceReport } from "../src/domain/types.js";
+import type { CacheEntry, ScanReport, WorkspaceReport } from "../src/domain/types.js";
+
+const GB = 1024 ** 3;
+
+function cache(relativePath: string, name: string, sizeBytes: number): CacheEntry {
+  return {
+    id: relativePath,
+    path: `/work/${relativePath}`,
+    relativePath,
+    name,
+    kind: "dependencies",
+    sizeBytes,
+    sizeError: null,
+    ignoredByGit: true,
+    rebuildHint: "rebuild",
+  };
+}
+
+function workspace(path: string, caches: CacheEntry[], cleanupAllowed = true): WorkspaceReport {
+  const cacheBytes = caches.reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0);
+  return {
+    tool: "projects",
+    path,
+    sourcePath: "/work",
+    dataSafety: "recoverable",
+    recommendation: "keep",
+    reasons: ["fixture"],
+    sizeBytes: cacheBytes + GB,
+    sizeError: null,
+    git: null,
+    inspectionError: null,
+    activeProcessCount: cleanupAllowed ? 0 : 1,
+    caches,
+    cacheBytes,
+    retainedSizeBytes: GB,
+    cacheCleanupAllowed: cleanupAllowed,
+    cacheCleanupReason: cleanupAllowed ? null : "a running process is using this workspace",
+    cacheInspectionError: null,
+  };
+}
+
+function scanReport(workspaces: WorkspaceReport[], processCheckAvailable = true): ScanReport {
+  const sum = (pick: (item: WorkspaceReport) => number) =>
+    workspaces.reduce((total, item) => total + pick(item), 0);
+  return {
+    generatedAt: "2026-07-13T12:00:00.000Z",
+    roots: [],
+    workspaces,
+    totalSizeBytes: sum((item) => item.sizeBytes ?? 0),
+    totalCacheBytes: sum((item) => item.cacheBytes),
+    reclaimableCacheBytes: sum((item) => (item.cacheCleanupAllowed ? item.cacheBytes : 0)),
+    retainedSizeBytes: sum((item) => item.retainedSizeBytes ?? 0),
+    candidateSizeBytes: 0,
+    staleAfterDays: 14,
+    processCheckAvailable,
+    processCheckError: processCheckAvailable ? null : "lsof unavailable",
+  };
+}
 
 describe("report formatting", () => {
   it("formats binary disk sizes", () => {
@@ -100,5 +158,40 @@ describe("report formatting", () => {
     expect(output).toContain("CANDIDATE means");
     expect(output).toContain("cannot know whether the project still matters");
     expect(output).toContain("will not delete or modify");
+  });
+
+  it("summarizes reviewable storage by type and largest workspace", () => {
+    const output = renderScanSummary(
+      scanReport([
+        workspace("/work/app", [
+          cache("node_modules", "Installed dependencies", 3 * GB),
+          cache(".next", "Next.js build cache", GB),
+        ]),
+        workspace("/work/engine", [cache("target", "Rust build output", 2 * GB)]),
+        workspace("/work/busy", [cache("node_modules", "Installed dependencies", 5 * GB)], false),
+      ]),
+    );
+
+    expect(output).toContain("read-only scan");
+    expect(output).toContain("6.0 GB");
+    expect(output).toContain("in 2 of 3 workspaces");
+    expect(output).toMatch(/Installed dependencies\s+3\.0 GB/);
+    expect(output).toMatch(/Rust build output\s+2\.0 GB/);
+    expect(output.indexOf("app")).toBeLessThan(output.indexOf("engine"));
+    expect(output).toContain("5.0 GB more in 1 workspace is held back");
+    expect(output).toContain("vibevac clean /work/app --all");
+  });
+
+  it("explains why nothing is ready when the process check is unavailable", () => {
+    const output = renderScanSummary(
+      scanReport([workspace("/work/app", [cache("node_modules", "Installed dependencies", GB)], false)], false),
+    );
+
+    expect(output).toContain("Nothing is ready to clean right now.");
+    expect(output).toContain("active-process check is unavailable");
+  });
+
+  it("suggests a root when no workspaces were found", () => {
+    expect(renderScanSummary(scanReport([]))).toContain("vibevac --root");
   });
 });

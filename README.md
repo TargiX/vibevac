@@ -21,6 +21,33 @@ useful — thing a cleaner can do: nothing.
 
 ## 📦 Get VibeVac
 
+See what your agents left behind, without installing anything. The scan is
+read-only and works on macOS and Linux with Node.js 20+:
+
+```bash
+npx vibevac
+```
+
+```text
+  VibeVac  read-only scan · nothing was changed
+
+  38 GB  rebuildable storage ready to review
+         in 23 of 115 workspaces · 113 GB scanned
+
+  By type
+    Installed dependencies       21 GB  ━━━━━━━━━━━━━━━━━━━━━━━━
+    Rust build output           9.1 GB  ━━━━━━━━━━
+    Python virtual environment  4.0 GB  ━━━━━
+    Next.js build cache         2.2 GB  ━━━
+```
+
+For batch review and cleanup, install the desktop app with Homebrew or
+download it directly:
+
+```bash
+brew install --cask targix/tap/vibevac
+```
+
 **[Download VibeVac 0.1.0 for macOS](https://github.com/TargiX/vibevac/releases/tag/v0.1.0)**
 
 The current prerelease is a signed and notarized universal app for Apple Silicon
@@ -182,9 +209,12 @@ token and matching browser origin.
 
 ## ⌨️ CLI
 
-The scanner and inspector also work without the desktop UI:
+The scanner and inspector also work without the desktop UI. A plain
+`vibevac` prints the summary above; `--details` prints the full evidence table:
 
 ```bash
+vibevac
+vibevac --details
 vibevac scan
 vibevac scan --stale-after 30
 vibevac scan --root ~/worktrees

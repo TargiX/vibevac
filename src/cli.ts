@@ -5,7 +5,11 @@ import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { customDiscoveryRoots, defaultDiscoveryRoots } from "./services/discovery.js";
-import { renderHumanReport, renderWorkspaceInspection } from "./render/report.js";
+import {
+  renderHumanReport,
+  renderScanSummary,
+  renderWorkspaceInspection,
+} from "./render/report.js";
 import { startUiServer } from "./server/ui-server.js";
 import { scanWorkspaces } from "./services/scanner.js";
 import { inventoryRebuildableCaches } from "./services/cache-inventory.js";
@@ -14,8 +18,25 @@ import { executeCacheCleanup, planCacheCleanup } from "./services/cache-cleanup.
 interface ScanCommandOptions {
   root: string[];
   json: boolean;
+  details: boolean;
   size: boolean;
   staleAfter: number;
+}
+
+// Progress goes to stderr and only to a terminal, so piped or JSON output
+// stays clean.
+function scanProgressReporter(): {
+  update: (progress: { completed: number; total: number }) => void;
+  clear: () => void;
+} {
+  if (!process.stderr.isTTY) return { update: () => {}, clear: () => {} };
+  const write = (text: string) => process.stderr.write(`\r\x1b[2K${text}`);
+  write("  Finding workspaces…");
+  return {
+    update: ({ completed, total }) =>
+      write(`  Measuring ${completed}/${total} workspaces and checking Git evidence…`),
+    clear: () => write(""),
+  };
 }
 
 function positiveInteger(value: string): number {
@@ -50,6 +71,7 @@ program
       .default([]),
   )
   .option("--json", "print machine-readable JSON", false)
+  .option("--details", "print the full per-workspace evidence table", false)
   .option("--no-size", "skip disk-usage calculation")
   .option(
     "--stale-after <days>",
@@ -60,17 +82,23 @@ program
   .action(async (options: ScanCommandOptions) => {
     const roots =
       options.root.length > 0 ? customDiscoveryRoots(options.root) : defaultDiscoveryRoots();
+    const progress = options.json
+      ? { update: () => {}, clear: () => {} }
+      : scanProgressReporter();
     const report = await scanWorkspaces(roots, {
       includeSize: options.size,
       staleAfterDays: options.staleAfter,
-    });
+      onProgress: progress.update,
+    }).finally(progress.clear);
 
     if (options.json) {
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
       return;
     }
 
-    process.stdout.write(`${renderHumanReport(report)}\n`);
+    process.stdout.write(
+      `${options.details ? renderHumanReport(report) : renderScanSummary(report)}\n`,
+    );
   });
 
 program
