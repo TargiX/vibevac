@@ -2,7 +2,7 @@
 
 All notable changes to VibeVac are documented here.
 
-## [Unreleased]
+## [0.2.0] - Unreleased
 
 ### Added
 
@@ -14,6 +14,8 @@ All notable changes to VibeVac are documented here.
 
 - Redesigned control center: one hero figure, a level rail, a compact sticky summary while scrolling, and hairline layout instead of boxed panels.
 - The npm package no longer ships `docs/` or desktop-only Tauri dependencies.
+- The CLI reads its version from `package.json` instead of a hardcoded string.
+- README rewritten around the one-command scan, install paths, and a table of every reclaimable directory with the proof it requires.
 
 ## [0.1.0] - 2026-07-14
 
@@ -35,4 +37,5 @@ All notable changes to VibeVac are documented here.
 - VibeVac does not fetch remotes; merge and recovery evidence use the locally available remote-tracking refs.
 - Process detection depends on `lsof` visibility for the current user.
 
+[0.2.0]: https://github.com/TargiX/vibevac/releases/tag/v0.2.0
 [0.1.0]: https://github.com/TargiX/vibevac/releases/tag/v0.1.0

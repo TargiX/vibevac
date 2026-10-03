@@ -1,6 +1,6 @@
 {
   "name": "vibevac",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "See and safely reclaim rebuildable storage left by AI coding agents: node_modules, Rust target, Python venvs, build caches and stale Git worktrees.",
   "author": "Ilya Moskovkin",
   "license": "MIT",

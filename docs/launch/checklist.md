@@ -9,7 +9,7 @@
 - [ ] Apple notarization ticket is stapled and validates.
 - [ ] DMG passes `hdiutil verify` and matches `SHA256SUMS.txt`.
 - [ ] A clean macOS user can install the DMG and complete a read-only scan.
-- [ ] GitHub release is marked prerelease while `0.1.0` feedback is collected.
+- [ ] GitHub release is marked prerelease while `0.2.0` feedback is collected.
 
 ## Repository surface
 

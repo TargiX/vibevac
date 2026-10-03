@@ -1,32 +1,32 @@
 # VibeVac
 
-**Keep the work. Vacuum the rebuildable weight.**
+**Your coding agents left gigabytes of `node_modules`, `target` and `.venv`
+behind. Get the space back without touching your code.**
 
 [![CI](https://github.com/TargiX/vibevac/actions/workflows/ci.yml/badge.svg)](https://github.com/TargiX/vibevac/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/TargiX/vibevac?include_prereleases&label=release)](https://github.com/TargiX/vibevac/releases)
+[![npm](https://img.shields.io/npm/v/vibevac?label=npm)](https://www.npmjs.com/package/vibevac)
 [![License: MIT](https://img.shields.io/badge/license-MIT-7ee697.svg)](LICENSE)
 
-![VibeVac control center showing workspace cleanup evidence](docs/assets/vibevac-control-center.png)
+![VibeVac control center showing reclaimable storage across AI coding workspaces](docs/assets/vibevac-control-center.png)
 
-AI coding tools are excellent at creating fresh workspaces. Tidying them up is
-apparently beneath their pay grade.
+Claude Code, Cursor, Codex, Conductor and friends are excellent at spinning up
+fresh worktrees. Each one gets its own dependencies, build output and caches.
+Tidying up is apparently beneath their pay grade.
 
-VibeVac is an open-source, local macOS control center for the storage they leave
-behind. It separates source code and Git state from dependencies, framework
-output, test reports, and other data that can be rebuilt. Then it shows the
-evidence and lets you decide what happens next.
+VibeVac finds that weight, proves which parts can be rebuilt, and lets you
+reclaim them. Source files, Git history and anything it cannot prove stay
+exactly where they are. It runs locally, needs no account, and sends nothing
+anywhere.
 
-When the evidence is incomplete, VibeVac does the least exciting — and most
-useful — thing a cleaner can do: nothing.
-
-## 📦 Get VibeVac
-
-See what your agents left behind, without installing anything. The scan is
-read-only and works on macOS and Linux with Node.js 20+:
+## ⚡ Try it in ten seconds
 
 ```bash
 npx vibevac
 ```
+
+The scan is read-only and works on macOS and Linux with Node.js 20+. Example
+output:
 
 ```text
   VibeVac  read-only scan · nothing was changed
@@ -39,38 +39,29 @@ npx vibevac
     Rust build output           9.1 GB  ━━━━━━━━━━
     Python virtual environment  4.0 GB  ━━━━━
     Next.js build cache         2.2 GB  ━━━
+
+  Largest
+     5.5 GB  checkout-redesign   node_modules, .next · 32d idle
+     4.7 GB  image-pipeline      target · 21d idle
+     3.1 GB  ml-notebooks        .venv · 45d idle
 ```
 
-For batch review and cleanup, install the desktop app with Homebrew or
-download it directly:
+Nothing is deleted by a scan. When you want the space back, use the desktop
+app or `vibevac clean`.
+
+## 📦 Install the app
+
+The desktop app adds batch review, a cleanup-level slider, per-directory
+selection, and a separate scope for removing whole stale worktrees.
 
 ```bash
 brew install --cask targix/tap/vibevac
 ```
 
-**[Download VibeVac 0.1.0 for macOS](https://github.com/TargiX/vibevac/releases/tag/v0.1.0)**
-
-The current prerelease is a signed and notarized universal app for Apple Silicon
-and Intel Macs running macOS 12 or newer. It does not want an account, your
-email, a subscription, telemetry permission, or a small background daemon “for
-your convenience.”
-
-Scanning never removes anything. Cleanup requires an explicit scope, a complete
-preview, fresh safety checks, and typed confirmation.
-
-## 🧭 The idea
-
-Most cleaners begin with a list of folders they know how to delete. VibeVac
-starts with a stricter question:
-
-> Can this machine prove that the data is rebuildable?
-
-Source is not dirt. An old checkout is not automatically abandoned. A familiar
-directory name is not proof. VibeVac combines filesystem boundaries, Git state,
-activity, running-process checks, ignore rules, and reconstruction evidence
-before it offers an action.
-
-The hesitation is the feature.
+Or **[download the latest release](https://github.com/TargiX/vibevac/releases)**:
+a signed and notarized universal app for Apple Silicon and Intel Macs on macOS
+12 or newer. It does not want an account, your email, a subscription,
+telemetry permission, or a small background daemon "for your convenience."
 
 ## 🧪 The first patient
 
@@ -79,166 +70,133 @@ The first Mac scanned by VibeVac was the one used to build it:
 ```text
 115 coding workspaces and repositories
 113 GB total footprint
-83 GB verified rebuildable caches
-63 GB available at the Full cache level
-30 GB source + Git retained
+ 83 GB verified rebuildable caches
+ 63 GB available at the Full cache level
+ 30 GB source + Git retained
 ```
 
 No real caches were deleted to produce those numbers. Even vacuum cleaners
 should dogfood dry-run mode first.
 
-## 🔎 What it shows
+## ♻️ What it can reclaim
 
-The control center gives every workspace an evidence trail instead of a mystery
-badge:
+| Ecosystem | Directories | Proof required before it is offered |
+| --- | --- | --- |
+| JavaScript | `node_modules` | a lockfile at the repository root |
+| Next.js, Nuxt, SvelteKit | `.next`, `.nuxt`, `.svelte-kit` | ignored by Git |
+| Turborepo, Parcel | `.turbo`, `.parcel-cache` | ignored by Git |
+| Rust | `target` | `Cargo.toml` beside it, Cargo's marker inside it |
+| Python | `.venv`, `venv` | `pyvenv.cfg` inside it, a Python manifest beside it |
+| Swift | `.build` | `Package.swift` beside it |
+| CocoaPods | `Pods` | `Manifest.lock` inside it, `Podfile.lock` beside it |
+| Gradle | `.gradle` | a Gradle settings or build file beside it |
+| Dart, Flutter | `.dart_tool` | `pubspec.yaml` beside it |
+| Xcode | `ModuleCache.noindex`, `Index.noindex`, `Intermediates.noindex` and friends | a DerivedData `info.plist` naming an Xcode project |
+| Build and test output | `dist`, `build`, `out`, `coverage`, `playwright-report`, `test-results` | ignored by Git, no release artifacts or nested repositories inside |
 
-- total, rebuildable, and retained size;
-- latest activity and active-process signals;
-- Git branch, uncommitted work, upstream, and default-branch merge evidence;
-- `CANDIDATE`, `KEEP`, `REVIEW`, and `PROTECT` recommendations;
-- a four-level cache cleanup slider that immediately changes the visible plan;
-- a separate `Entire worktrees` scope that is never selected automatically;
-- expandable cache inventories and per-directory selection;
-- single-workspace and batch cleanup previews;
-- typed confirmation and an audit record after cleanup;
-- linked-worktree removal with branch preservation and reconstruction guidance.
+On top of its own proof, every directory must be ignored by Git, contain no
+tracked files, and be a real directory rather than a symlink. Release archives,
+dSYMs, IPAs and Xcode `Products` are always retained. If an inspection cannot
+finish, the directory is retained.
 
-Cleanup level only decides what may enter a plan. It never turns a wider cache
-selection into worktree deletion.
+Missing an ecosystem? [Open an issue](https://github.com/TargiX/vibevac/issues/new/choose)
+with the directory name and what proves it belongs to its tool.
 
-## ♻️ What counts as rebuildable
+## 🧭 Why it is careful
 
-VibeVac recognizes a deliberately narrow allowlist of generated directories,
-including:
+Most cleaners start from a list of folders they know how to delete. VibeVac
+starts from a stricter question:
 
-- `node_modules`;
-- `.nuxt`, `.next`, and `.svelte-kit`;
-- `.turbo` and `.parcel-cache`;
-- ignored `dist`, `build`, and `out` directories;
-- `coverage`, `playwright-report`, and `test-results`;
-- Rust `target` next to a `Cargo.toml`, with Cargo's own marker inside;
-- Python `.venv` and `venv` that contain `pyvenv.cfg`, next to a Python
-  manifest such as `pyproject.toml`, `uv.lock`, or `requirements.txt`;
-- SwiftPM `.build` next to `Package.swift`;
-- CocoaPods `Pods` with `Manifest.lock`, next to `Podfile.lock`;
-- Gradle `.gradle` next to a Gradle settings or build file;
-- Dart and Flutter `.dart_tool` next to `pubspec.yaml`;
-- Xcode `Intermediates.noindex`, `ModuleCache.noindex`, `Index.noindex`,
-  `CompilationCache.noindex`, and `SDKStatCaches.noindex` inside verified
-  DerivedData directories, including deeply nested `.context` builds.
+> Can this machine prove that the data is rebuildable?
 
-A name match is not enough. Every directory must also be ignored by Git.
-`node_modules` additionally requires a repository lockfile, ecosystem caches
-with common names need the manifest and marker listed above, and symlinks are
-never accepted as cleanup targets.
+Source is not dirt. An old checkout is not automatically abandoned. A familiar
+directory name is not proof. VibeVac combines filesystem boundaries, Git state,
+activity, running-process checks, ignore rules, and reconstruction evidence
+before it offers anything. When the evidence is incomplete, it does the least
+exciting and most useful thing a cleaner can do, which is nothing.
 
-An Xcode cache also needs a regular `info.plist` identifying an Xcode workspace
-or project at its DerivedData root. Release archives, dSYMs, IPAs, test result
-bundles, and `Products` are retained. A broad build directory containing any of
-these, a nested repository, or Xcode DerivedData is split into individual
-verified caches instead of being offered for wholesale deletion. Directories
-containing tracked files are not cleanup targets. If this bounded inspection
-cannot prove safety, the enclosing directory is retained.
+The hesitation is the feature.
 
-Batch reviews skip workspaces that fail a fresh safety check and show their
-reasons alongside the accepted plans. An active workspace does not prevent
-other verified workspaces from entering the review.
+Before removing anything, VibeVac:
 
-Complete worktree removal is a separate operation with a much higher bar. The
-worktree must be registered, clean, synced, merged, old enough, process-free,
-and free of ignored data outside the narrow rebuildable allowlist by default.
-An explicit, session-only **Allow removal of protected worktrees** checkbox
-bypasses merge, remote, local-file, and process protections. The time slider
-still filters targets by 90, 60, 30, or 14 days; manual mode also offers **7+ days**; **All ages** explicitly includes
-recent and unknown activity in manual mode. Each checkout
-still needs explicit selection (individual rows or **Select all shown**), a fresh risk preview, and its exact `FORCE REMOVE`
-confirmation. Local and ignored files are permanently deleted; running tasks
-may break and are never stopped automatically. Shared Git history and branches
-remain, including unpublished commits. Standalone repositories, detached
-checkouts, and parents containing nested registered worktrees stay protected.
+1. repeats the Git and cache inventory checks;
+2. rejects arbitrary, changed, or newly introduced paths;
+3. checks for processes working inside the workspace;
+4. resolves canonical paths and rejects symlinks or traversal;
+5. shows the exact directories and bytes;
+6. requires a typed, workspace-specific or batch-specific confirmation;
+7. checks the complete plan again at execution time;
+8. records the result in `~/.vibevac/audit.jsonl`.
+
+The full reasoning is in the [safety model](docs/safety-model.md).
 
 ## 📍 Where it looks
 
 VibeVac does not roam across the entire disk hoping to find something dramatic.
-It scans explicit, bounded sources that exist on the Mac:
+It scans explicit, bounded sources:
 
 - `~/.codex/worktrees`;
 - `~/conductor/workspaces`;
 - common project folders such as `~/Code`, `~/Developer`, `~/Projects`,
   `~/repos`, `~/src`, `~/workspace`, and `~/workspaces`;
 - `~/.openclaw/workspace`;
-- any additional folder the user chooses in the Sources panel.
+- any folder you add in the Sources panel or pass with `--root`.
 
-Within those roots, Git evidence determines what a directory is. A `.git` file
-identifies a linked worktree; a `.git` directory identifies a standalone
-repository. Registered worktrees are discovered even when Cursor, Claude,
-Hermes, Codex, or another tool placed them outside the original project folder.
+Inside those roots, Git decides what a directory is. A `.git` file means a
+linked worktree, a `.git` directory means a standalone repository. Registered
+worktrees are found even when Claude Code, Cursor, Hermes, Codex or another
+tool put them outside the original project folder.
 
-VibeVac does not inspect agent conversations, credentials, memories,
-application databases, or IDE `workspaceStorage`.
+VibeVac does not read agent conversations, credentials, memories, application
+databases, or IDE `workspaceStorage`.
 
-## 🛡️ The trust model
+## 🧹 Cleaning up
 
-Before removing selected caches, VibeVac:
+### In the desktop app
 
-1. repeats Git and cache inventory checks;
-2. rejects arbitrary, changed, or newly introduced paths;
-3. checks for processes working inside the workspace;
-4. resolves canonical paths and rejects symlinks or traversal;
-5. shows the exact directories and bytes;
-6. requires a workspace-specific or batch-specific typed confirmation;
-7. checks the complete plan again at execution time;
-8. records the result in `~/.vibevac/audit.jsonl`.
+Pick a cleanup level (90+, 30+, 14+ days idle, or every verified cache) and the
+plan updates immediately. Review it, type the confirmation, and VibeVac
+revalidates every workspace once more before removing anything. Busy or
+unprovable workspaces are skipped with their reasons, and the rest proceed.
 
-The cache flow never removes the workspace, source files, branch, or Git
-history. The worktree flow uses `git worktree remove`, preserves the branch and
-common Git repository, and records reconstruction guidance.
+**Entire worktrees** is a separate scope with a much higher bar. A linked
+worktree qualifies only when it is registered, clean, synced, merged, old
+enough, free of running processes, and free of ignored data outside the
+allowlist. It is never selected automatically. Removal uses
+`git worktree remove`, keeps the branch and shared history, and records how to
+recreate the checkout.
 
-See the complete [safety model](docs/safety-model.md).
+An explicit, session-only **Allow removal of protected worktrees** switch
+bypasses the merge, remote, local-file, and process protections for people who
+know what they are doing. The age filter still applies, each checkout still
+needs explicit selection, a fresh risk preview, and its exact `FORCE REMOVE`
+confirmation. Local and ignored files are permanently deleted in that mode;
+shared Git history and branches remain.
 
-## 🔒 Local means local
-
-The desktop app runs scanning and cleanup through application-local Tauri
-commands. There is no account, telemetry, remote API, model, GitHub access, or
-listening HTTP server. It invokes the system `git`, `du`, and `lsof` tools and
-reads only the workspace roots shown in the UI.
-
-The optional contributor command `vibevac ui` uses a localhost compatibility
-server bound to `127.0.0.1`. Mutating requests require a random in-memory session
-token and matching browser origin.
-
-## ⌨️ CLI
-
-The scanner and inspector also work without the desktop UI. A plain
-`vibevac` prints the summary above; `--details` prints the full evidence table:
+### From the terminal
 
 ```bash
-vibevac
-vibevac --details
-vibevac scan
-vibevac scan --stale-after 30
-vibevac scan --root ~/worktrees
-vibevac inspect ~/.codex/worktrees/4c66/my-app
-vibevac scan --json > vibevac-report.json
+vibevac                                  # summary of what can be reclaimed
+vibevac --details                        # full per-workspace evidence table
+vibevac --root ~/worktrees               # scan a specific folder
+vibevac inspect ~/Projects/my-app        # the evidence behind one workspace
+vibevac --json > vibevac-report.json     # machine-readable report
 ```
 
-Cleanup is available from the CLI too. Select an exact workspace and cache;
-the default command only previews. Use the confirmation from that preview to
-execute the same selection, with fresh safety checks and an audit entry:
+`vibevac clean` previews by default. Run it once, then repeat with the
+confirmation it prints:
 
 ```bash
-vibevac clean /path/to/project --cache .context/native-build/ModuleCache.noindex
-vibevac clean /path/to/project --cache .context/native-build/ModuleCache.noindex \
-  --execute --confirm 'CLEAN parent/project'
-vibevac clean /path/to/project --all --json
+vibevac clean ~/Projects/my-app --all
+vibevac clean ~/Projects/my-app --all --execute --confirm 'CLEAN Projects/my-app'
+vibevac clean ~/Projects/my-app --cache node_modules --cache .next
 ```
 
-`--cache` is repeatable. `--all` explicitly selects every verified cache in
-that one workspace; it never removes the workspace itself. Neither option
-relaxes process, Git, or path checks. Reported cache sizes are estimates:
-hardlinks, APFS clones, and concurrent disk activity affect actual free space.
+`--all` selects every verified cache in that one workspace and never removes
+the workspace itself. Sizes are estimates: hardlinks, APFS clones, and
+concurrent disk activity affect how much space is actually freed.
 
-### Recommendation model
+### Reading the recommendations
 
 | Recommendation | Meaning |
 | --- | --- |
@@ -247,59 +205,60 @@ hardlinks, APFS clones, and concurrent disk activity affect actual free space.
 | `REVIEW` | Recoverable, but one intent signal cannot be proven. |
 | `PROTECT` | Contains local-only work, is a standalone repository, or inspection was incomplete. |
 
-Cache cleanup eligibility is independent from whole-workspace status. A dirty
-workspace may still contain verified ignored build caches while its source
-changes remain protected.
+Cache cleanup is independent of the whole-workspace recommendation. A dirty
+workspace can still contain verified, ignored build caches while its source
+changes stay protected.
+
+## 🔒 Local means local
+
+The desktop app runs scanning and cleanup through application-local Tauri
+commands. There is no account, telemetry, remote API, model, GitHub access, or
+listening HTTP server. It invokes the system `git`, `du`, and `lsof` tools and
+reads only the sources shown in the UI.
+
+The optional `vibevac ui` command serves the same interface from a localhost
+server bound to `127.0.0.1`. Mutating requests require a random in-memory
+session token and a matching browser origin.
+
+## 💻 Supported environments
+
+- Desktop app: macOS 12+, universal Apple Silicon and Intel build.
+- CLI: macOS and Linux with Node.js 20+.
+- System tools: Git, `du` for disk sizing, and `lsof` for active-process
+  protection. Without `lsof`, scans still work but cleanup stays blocked.
 
 ## 🛠️ Build and contribute
 
-Contributions are welcome, especially reproducible edge cases, new fixtures,
-and changes that make destructive code more boring. Safety changes need tests;
-`probably fine` is not a storage format.
+Contributions are welcome, especially reproducible edge cases, new ecosystem
+proofs, fixtures, and changes that make destructive code more boring. Safety
+changes need tests; `probably fine` is not a storage format.
 
 ```bash
 pnpm install
-pnpm check
-pnpm desktop:dev
-pnpm desktop:build
+pnpm check            # typecheck, tests, CLI and UI build
+pnpm desktop:dev      # run the desktop app
+pnpm dev scan         # run the CLI from source
 ```
 
 Building the desktop app requires Node.js, pnpm, Rust, and the platform's Tauri
 prerequisites. The TypeScript and Rust test suites use real temporary Git
-repositories and perform destructive cleanup only inside disposable fixtures.
+repositories and only perform destructive cleanup inside disposable fixtures.
 
-For CLI development:
-
-```bash
-pnpm dev scan --no-size
-pnpm dev:ui
-pnpm build
-node dist/cli.js scan
-```
-
-See [the release guide](docs/releasing.md) for signing, notarization, and GitHub
-Release steps.
-
-## 💻 Supported environments
-
-- Desktop app: macOS 12+, universal Apple Silicon and Intel release.
-- CLI: macOS and Linux with Node.js 20+.
-- System tools: Git, `du` for disk sizing, and `lsof` for active-process
-  protection.
+See [the release guide](docs/releasing.md) for signing, notarization, npm, and
+Homebrew publishing.
 
 ## 🗺️ Roadmap
 
-- **0.1.x:** distribution, first-run trust, anonymized feedback, truthful scan
-  progress, cancellation, incremental rescans, Pin, and Ignore.
-- **0.2:** cleanup history and package-manager-aware restore guidance.
-- **0.3:** canonical repository grouping, safe provenance, orphan review, and
-  workspace lifecycle controls.
-- **Later:** local growth budgets and cross-platform packages after the macOS
-  safety loop is proven.
+- **Next:** truthful scan progress in the app, cancellation, incremental
+  rescans, Pin and Ignore, and a shareable cleanup summary.
+- **Then:** cleanup history, package-manager-aware restore guidance, and a menu
+  bar view that notices when agents start piling up storage again.
+- **Later:** canonical repository grouping, orphan review, and cross-platform
+  desktop packages once the macOS safety loop is proven.
 
 VibeVac will not become another agent framework. Its job is to make the local
-infrastructure around coding agents understandable, reclaimable, and — when
-necessary — reconstructable.
+infrastructure around coding agents understandable, reclaimable, and, when
+necessary, reconstructable.
 
 ## 📄 License
 
