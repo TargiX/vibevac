@@ -115,14 +115,16 @@ export interface CacheCleanupResult {
 }
 
 export interface WorktreeRemovalPlan {
+  force: boolean;
+  warnings: string[];
   workspacePath: string;
   sizeBytes: number;
   branch: string;
   head: string;
-  upstream: string;
-  defaultBranch: string;
-  lastActivityAt: string;
-  inactiveDays: number;
+  upstream: string | null;
+  defaultBranch: string | null;
+  lastActivityAt: string | null;
+  inactiveDays: number | null;
   commonGitDirectory: string;
   reconstructionCommand: string;
   confirmation: string;
@@ -135,4 +137,14 @@ export interface WorktreeRemovalResult {
   reconstructionCommand: string;
   completedAt: string;
   auditPath: string;
+}
+
+export interface PreviewSkip {
+  workspacePath: string;
+  reason: string;
+}
+
+export interface BatchPreview<T> {
+  plans: T[];
+  skipped: PreviewSkip[];
 }

@@ -36,6 +36,9 @@ export interface UiServerHandle {
 }
 
 interface CleanupBody {
+  force?: unknown;
+  reviewedHead?: unknown;
+  reviewedWarnings?: unknown;
   workspacePath?: unknown;
   relativePaths?: unknown;
   confirmation?: unknown;
@@ -45,17 +48,20 @@ interface CleanupBody {
 function parseWorktreeRemoval(body: CleanupBody): {
   workspacePath: string;
   minimumInactiveDays: number;
+  force: boolean;
 } {
   if (
     typeof body.workspacePath !== "string" ||
     typeof body.minimumInactiveDays !== "number" ||
-    !Number.isInteger(body.minimumInactiveDays)
+    !Number.isInteger(body.minimumInactiveDays) ||
+    (body.force !== undefined && typeof body.force !== "boolean")
   ) {
     throw new Error("Invalid worktree removal request");
   }
   return {
     workspacePath: body.workspacePath,
     minimumInactiveDays: body.minimumInactiveDays,
+    force: body.force === true,
   };
 }
 
@@ -298,7 +304,12 @@ export async function startUiServer(
           response,
           200,
           await executeWorktreeRemoval(
-            { ...selection, confirmation: body.confirmation },
+            {
+              ...selection,
+              confirmation: body.confirmation,
+              reviewedHead: typeof body.reviewedHead === "string" ? body.reviewedHead : undefined,
+              reviewedWarnings: Array.isArray(body.reviewedWarnings) && body.reviewedWarnings.every((item) => typeof item === "string") ? body.reviewedWarnings : undefined,
+            },
             { auditPath: options.auditPath },
           ),
         );

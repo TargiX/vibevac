@@ -27,12 +27,22 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "category": "DeveloperTool",
     "shortDescription": "Safe cleanup for AI coding workspaces",
     "longDescription": "VibeVac separates source and Git state from verified rebuildable caches, then lets you reclaim storage with an explicit, revalidated cleanup plan.",
     "macOS": {
       "minimumSystemVersion": "12.0"
-    }
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   }
 }

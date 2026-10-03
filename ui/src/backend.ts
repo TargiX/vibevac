@@ -2,12 +2,13 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
+  BatchPreview,
   CacheCleanupPlan,
   CacheCleanupResult,
   ScanReport,
   WorktreeRemovalPlan,
   WorktreeRemovalResult,
-} from "../../src/domain/types";
+} from "../../src/domain/types.js";
 
 export interface CleanupRequest {
   workspacePath: string;
@@ -19,6 +20,9 @@ interface ExecuteCleanupRequest extends CleanupRequest {
 }
 
 export interface WorktreeRemovalRequest {
+  force?: boolean;
+  reviewedHead?: string;
+  reviewedWarnings?: string[];
   workspacePath: string;
   minimumInactiveDays: number;
   confirmation?: string;
@@ -87,12 +91,12 @@ export async function previewCacheCleanup(
 
 export async function previewBatchCacheCleanup(
   requests: CleanupRequest[],
-): Promise<CacheCleanupPlan[]> {
+): Promise<BatchPreview<CacheCleanupPlan>> {
   if (nativeApp) {
-    return invoke<CacheCleanupPlan[]>("preview_cache_cleanup_batch", { requests });
+    return invoke<BatchPreview<CacheCleanupPlan>>("preview_cache_cleanup_batch", { requests });
   }
 
-  return Promise.all(requests.map((request) => previewCacheCleanup(request)));
+  return settlePreviews(requests, previewCacheCleanup);
 }
 
 export async function cleanCaches(
@@ -114,13 +118,12 @@ export async function cleanCaches(
 
 export async function previewWorktreeRemovals(
   requests: WorktreeRemovalRequest[],
-): Promise<WorktreeRemovalPlan[]> {
+): Promise<BatchPreview<WorktreeRemovalPlan>> {
   if (nativeApp) {
-    return invoke<WorktreeRemovalPlan[]>("preview_worktree_removal_batch", { requests });
+    return invoke<BatchPreview<WorktreeRemovalPlan>>("preview_worktree_removal_batch", { requests });
   }
 
-  return Promise.all(
-    requests.map((request) =>
+  return settlePreviews(requests, (request) =>
       requestJson<WorktreeRemovalPlan>("/api/worktree/preview", {
         method: "POST",
         headers: {
@@ -129,7 +132,6 @@ export async function previewWorktreeRemovals(
         },
         body: JSON.stringify(request),
       }),
-    ),
   );
 }
 
@@ -148,4 +150,20 @@ export async function removeWorktree(
     },
     body: JSON.stringify(request),
   });
+}
+
+async function settlePreviews<R extends { workspacePath: string }, P>(
+  requests: R[],
+  preview: (request: R) => Promise<P>,
+): Promise<BatchPreview<P>> {
+  const results = await Promise.allSettled(requests.map(preview));
+  const batch: BatchPreview<P> = { plans: [], skipped: [] };
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") batch.plans.push(result.value);
+    else batch.skipped.push({
+      workspacePath: requests[index]!.workspacePath,
+      reason: result.reason instanceof Error ? result.reason.message : String(result.reason),
+    });
+  });
+  return batch;
 }

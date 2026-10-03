@@ -88,10 +88,15 @@ Git history. Standalone repositories are never removal targets.
 13. A multi-workspace cleanup shows the complete revalidated plan and requires
     a typed batch confirmation before executing each workspace transaction.
 14. Entire-worktree removal is a separate scope with its own 90, 60, 30, and
-    14-day levels; moving the level never selects a worktree automatically.
-15. A whole-worktree plan accepts only registered linked worktrees that are
-    clean, synced, merged, old enough, process-free, and free of ignored data
+    14-day levels; moving the level never selects a worktree automatically. A separate Select all
+    shown action selects eligible rows matching the current list and search.
+15. Default whole-worktree plans accept only registered linked worktrees that
+    are clean, synced, merged, old enough, process-free, and free of ignored data
     outside the verified rebuildable directory and generated-file allowlist.
+    A session-only manual override retains the selected time filter and adds
+    7+ days and an explicit All ages endpoint. It bypasses the remaining policy checks after explicit
+    target selection, risk review, and exact `FORCE REMOVE` confirmation. It
+    preserves structural linked-worktree checks and never stops processes.
 16. Whole-worktree removal uses Git's worktree operation, revalidates each
     selection at execution, preserves the branch and common repository, and
     records reconstruction instructions in the local audit log.

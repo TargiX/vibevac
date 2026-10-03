@@ -89,15 +89,38 @@ including:
 - `.turbo` and `.parcel-cache`;
 - ignored `dist`, `build`, and `out` directories;
 - `coverage`, `playwright-report`, and `test-results`.
+- Xcode `Intermediates.noindex`, `ModuleCache.noindex`, `Index.noindex`,
+  `CompilationCache.noindex`, and `SDKStatCaches.noindex` inside verified
+  DerivedData directories, including deeply nested `.context` builds.
 
 A name match is not enough. Every directory must also be ignored by Git.
 `node_modules` additionally requires a repository lockfile, and symlinks are
 never accepted as cleanup targets.
 
+An Xcode cache also needs a regular `info.plist` identifying an Xcode workspace
+or project at its DerivedData root. Release archives, dSYMs, IPAs, test result
+bundles, and `Products` are retained. A broad build directory containing any of
+these, a nested repository, or Xcode DerivedData is split into individual
+verified caches instead of being offered for wholesale deletion. Directories
+containing tracked files are not cleanup targets. If this bounded inspection
+cannot prove safety, the enclosing directory is retained.
+
+Batch reviews skip workspaces that fail a fresh safety check and show their
+reasons alongside the accepted plans. An active workspace does not prevent
+other verified workspaces from entering the review.
+
 Complete worktree removal is a separate operation with a much higher bar. The
 worktree must be registered, clean, synced, merged, old enough, process-free,
-and free of ignored data outside the narrow rebuildable allowlist. Standalone
-repositories are never eligible.
+and free of ignored data outside the narrow rebuildable allowlist by default.
+An explicit, session-only **Allow removal of protected worktrees** checkbox
+bypasses merge, remote, local-file, and process protections. The time slider
+still filters targets by 90, 60, 30, or 14 days; manual mode also offers **7+ days**; **All ages** explicitly includes
+recent and unknown activity in manual mode. Each checkout
+still needs explicit selection (individual rows or **Select all shown**), a fresh risk preview, and its exact `FORCE REMOVE`
+confirmation. Local and ignored files are permanently deleted; running tasks
+may break and are never stopped automatically. Shared Git history and branches
+remain, including unpublished commits. Standalone repositories, detached
+checkouts, and parents containing nested registered worktrees stay protected.
 
 ## 📍 Where it looks
 
@@ -160,6 +183,22 @@ vibevac scan --root ~/worktrees
 vibevac inspect ~/.codex/worktrees/4c66/my-app
 vibevac scan --json > vibevac-report.json
 ```
+
+Cleanup is available from the CLI too. Select an exact workspace and cache;
+the default command only previews. Use the confirmation from that preview to
+execute the same selection, with fresh safety checks and an audit entry:
+
+```bash
+vibevac clean /path/to/project --cache .context/native-build/ModuleCache.noindex
+vibevac clean /path/to/project --cache .context/native-build/ModuleCache.noindex \
+  --execute --confirm 'CLEAN parent/project'
+vibevac clean /path/to/project --all --json
+```
+
+`--cache` is repeatable. `--all` explicitly selects every verified cache in
+that one workspace; it never removes the workspace itself. Neither option
+relaxes process, Git, or path checks. Reported cache sizes are estimates:
+hardlinks, APFS clones, and concurrent disk activity affect actual free space.
 
 ### Recommendation model
 

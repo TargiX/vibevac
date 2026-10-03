@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -29,6 +29,40 @@ async function createRepository(withLockfile = true): Promise<string> {
 }
 
 describe("rebuildable cache inventory", () => {
+  it("finds deep Xcode subcaches while retaining archives, symbols and Products", async () => {
+    const root = await createRepository();
+    await writeFile(resolve(root, ".gitignore"), ".context/\n");
+    const dd = ".context/build/release/DerivedData";
+    for (const path of [
+      `${dd}/Build/Intermediates.noindex/objects`, `${dd}/ModuleCache.noindex/modules`,
+      `${dd}/Index.noindex/DataStore`, `${dd}/Build/Products/App.app`,
+      ".context/build/Release.xcarchive/Products", ".context/build/Release.dSYM/Contents",
+      ".context/build/QA.xcresult/Data", ".context/build/nested/node_modules/pkg",
+    ]) await mkdir(resolve(root, path), { recursive: true });
+    await writeFile(resolve(root, dd, "info.plist"), "<dict><key>WorkspacePath</key><string>/project/App.xcworkspace</string></dict>");
+    await writeFile(resolve(root, ".context/build/Release.ipa"), "signed release");
+    await writeFile(resolve(root, ".context/build/nested/.git"), "gitdir: /other/git");
+
+    const result = await inventoryRebuildableCaches(root);
+    expect(result.map(c => c.relativePath).sort()).toEqual([
+      `${dd}/Build/Intermediates.noindex`, `${dd}/Index.noindex`, `${dd}/ModuleCache.noindex`,
+    ]);
+  });
+
+  it("rejects misleading cache names, symlinks and tracked files in ignored directories", async () => {
+    const root = await createRepository();
+    await writeFile(resolve(root, ".gitignore"), ".context/\nModuleCache.noindex/\n.next/\n");
+    await mkdir(resolve(root, "ModuleCache.noindex"));
+    await mkdir(resolve(root, ".next"));
+    await writeFile(resolve(root, ".next/source.ts"), "valuable tracked source");
+    await execFileAsync("git", ["-C", root, "add", "--force", ".next/source.ts"]);
+    const dd = resolve(root, ".context/native-build");
+    await mkdir(dd, {recursive: true});
+    await writeFile(resolve(dd, "info.plist"), "<key>WorkspacePath</key><string>/project/App.xcodeproj</string>");
+    await symlink(resolve(root, "ModuleCache.noindex"), resolve(dd, "ModuleCache.noindex"));
+    expect(await inventoryRebuildableCaches(root)).toEqual([]);
+  });
+
   it("includes only known, Git-ignored, reproducible directories", async () => {
     const root = await createRepository();
     await mkdir(resolve(root, "node_modules", "package"), { recursive: true });

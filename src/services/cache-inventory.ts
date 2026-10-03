@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { access, readdir } from "node:fs/promises";
-import { relative, resolve, sep } from "node:path";
+import { access, lstat, readFile, readdir } from "node:fs/promises";
+import { basename, dirname, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import type { CacheEntry, CacheKind } from "../domain/types.js";
@@ -125,7 +125,68 @@ const NODE_LOCKFILES = [
 ];
 
 const SKIP_TRAVERSAL = new Set([".git", ".idea", ".vscode"]);
-const MAX_DEPTH = 4;
+const MAX_DEPTH = 8;
+const XCODE_CACHE_NAMES = new Set([
+  "Intermediates.noindex", "ModuleCache.noindex", "Index.noindex",
+  "CompilationCache.noindex", "SDKStatCaches.noindex",
+]);
+for (const name of XCODE_CACHE_NAMES) {
+  CACHE_DEFINITIONS.set(name, {
+    kind: "tool-cache",
+    name: `Xcode ${name.replace(".noindex", "")} cache`,
+    rebuildHint: "Xcode recreates this compiler cache on the next build. Release archives and Products are retained.",
+  });
+}
+
+function isProtectedArtifact(name: string): boolean {
+  return name === ".git" || name === "Products" ||
+    [".xcarchive", ".xcresult", ".dSYM", ".ipa"].some((suffix) => name.endsWith(suffix));
+}
+
+async function isXcodeRoot(path: string): Promise<boolean> {
+  try {
+    const marker = resolve(path, "info.plist");
+    const stat = await lstat(marker);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 32_768) return false;
+    const info = await readFile(marker, "utf8");
+    return info.includes("<key>WorkspacePath</key>") &&
+      (info.includes(".xcworkspace</string>") || info.includes(".xcodeproj</string>"));
+  } catch { return false; }
+}
+
+async function isXcodeCache(path: string): Promise<boolean> {
+  const parent = dirname(path);
+  if (basename(path) === "Intermediates.noindex" && basename(parent) !== "Build") return false;
+  const root = basename(path) === "Intermediates.noindex" && basename(parent) === "Build"
+    ? dirname(parent) : parent;
+  return isXcodeRoot(root);
+}
+
+// Broad build directories may mix throwaway caches with irreplaceable release
+// symbols or nested repositories. Unknown/oversized inspection fails closed.
+async function containsProtectedContent(path: string): Promise<boolean> {
+  let remaining = 2_000;
+  async function visit(directory: string, depth: number): Promise<boolean> {
+    if (depth > MAX_DEPTH || --remaining < 0 || await isXcodeRoot(directory)) return true;
+    try {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        if (--remaining < 0 || isProtectedArtifact(entry.name)) return true;
+        if (entry.isDirectory() && !entry.isSymbolicLink() && await visit(resolve(directory, entry.name), depth + 1)) return true;
+      }
+      return false;
+    } catch { return true; }
+  }
+  return visit(path, 0);
+}
+
+async function containsTrackedFiles(workspacePath: string, relativePath: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", workspacePath, "ls-files", "--", relativePath], {
+      encoding: "utf8", maxBuffer: 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    return stdout.length > 0;
+  } catch { return true; }
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -191,6 +252,7 @@ export async function inventoryRebuildableCaches(
         }
 
         const absolutePath = resolve(directory, entry.name);
+        if (isProtectedArtifact(entry.name) || await exists(resolve(absolutePath, ".git"))) return;
         const definition = CACHE_DEFINITIONS.get(entry.name);
         if (definition) {
           if (definition.requiresNodeLockfile && !nodeLockfilePresent) {
@@ -201,6 +263,12 @@ export async function inventoryRebuildableCaches(
             relativePath.startsWith(`..${sep}`) ||
             !(await isIgnoredByGit(workspacePath, relativePath))
           ) {
+            return;
+          }
+          if (XCODE_CACHE_NAMES.has(entry.name) && !(await isXcodeCache(absolutePath))) return;
+          if (await containsTrackedFiles(workspacePath, relativePath) ||
+              (definition.kind === "build-output" && await containsProtectedContent(absolutePath))) {
+            if (depth < MAX_DEPTH) await visit(absolutePath, depth + 1);
             return;
           }
           candidates.push({ path: absolutePath, definition });

@@ -50,7 +50,7 @@ export async function planCacheCleanup(
   relativePaths: string[],
   options: CleanupOptions = {},
 ): Promise<CacheCleanupPlan> {
-  const resolvedWorkspacePath = resolve(workspacePath);
+  const resolvedWorkspacePath = await realpath(resolve(workspacePath));
   const selectedPaths = [...new Set(relativePaths)];
   if (selectedPaths.length === 0) {
     throw new Error("Select at least one cache directory");

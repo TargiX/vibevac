@@ -1,6 +1,6 @@
 import type { WorkspaceReport } from "../../src/domain/types.js";
 
-export type CleanupLevelIndex = 0 | 1 | 2 | 3;
+export type CleanupLevelIndex = 0 | 1 | 2 | 3 | 4 | 5;
 export type CleanupTone = "careful" | "balanced" | "thorough" | "full";
 export type CleanupScope = "cache" | "worktree";
 export type CleanupPresentationTone =
@@ -89,12 +89,34 @@ export const WORKTREE_CLEANUP_LEVELS: readonly CleanupLevel[] = [
   },
 ] as const;
 
-export function cleanupLevels(scope: CleanupScope): readonly CleanupLevel[] {
-  return scope === "worktree" ? WORKTREE_CLEANUP_LEVELS : CLEANUP_LEVELS;
+export const MANUAL_WORKTREE_CLEANUP_LEVELS: readonly CleanupLevel[] = [
+  ...WORKTREE_CLEANUP_LEVELS,
+  {
+    index: 4,
+    label: "One week",
+    shortLabel: "7+ days",
+    minimumInactiveDays: 7,
+    tone: "full",
+    description: "Linked worktrees untouched for at least one week.",
+  },
+  {
+    index: 5,
+    label: "All ages",
+    shortLabel: "Including today",
+    minimumInactiveDays: 0,
+    tone: "full",
+    description: "All linked worktrees, including recent or unknown activity.",
+  },
+];
+
+export function cleanupLevels(scope: CleanupScope, force = false): readonly CleanupLevel[] {
+  return scope === "worktree"
+    ? force ? MANUAL_WORKTREE_CLEANUP_LEVELS : WORKTREE_CLEANUP_LEVELS
+    : CLEANUP_LEVELS;
 }
 
-export function cleanupLevel(index: number, scope: CleanupScope = "cache"): CleanupLevel {
-  const levels = cleanupLevels(scope);
+export function cleanupLevel(index: number, scope: CleanupScope = "cache", force = false): CleanupLevel {
+  const levels = cleanupLevels(scope, force);
   return levels[index] ?? levels[0]!;
 }
 
@@ -113,8 +135,9 @@ export function isWorkspaceInWorktreeLevel(
   >,
   level: CleanupLevel,
   now = Date.now(),
+  force = false,
 ): boolean {
-  return worktreeRemovalBlocker(workspace, level, now) === null;
+  return worktreeRemovalBlocker(workspace, level, now, force) === null;
 }
 
 export function worktreeRemovalBlocker(
@@ -124,11 +147,17 @@ export function worktreeRemovalBlocker(
   >,
   level: CleanupLevel,
   now = Date.now(),
+  force = false,
 ): string | null {
   const git = workspace.git;
   if (!git) return workspace.reasons[0] ?? "Git inspection is unavailable.";
   if (git.kind !== "linked-worktree") {
     return "Standalone repositories are protected from entire-worktree removal.";
+  }
+  if (force) {
+    if (!git.branch) return "An attached branch is required to preserve Git history.";
+    if (workspace.sizeBytes === null) return "The worktree size could not be measured.";
+    return worktreeAgeBlocker(git.lastActivityAt, level, now);
   }
   if (workspace.activeProcessCount === null) {
     return "The active-process check is unavailable.";
@@ -151,15 +180,21 @@ export function worktreeRemovalBlocker(
     return "The current commit is not proven merged into the default branch.";
   }
   if (workspace.sizeBytes === null) return "The worktree size could not be measured.";
-  if (level.minimumInactiveDays === null) return "Entire-worktree removal requires an age limit.";
+  const ageBlocker = worktreeAgeBlocker(git.lastActivityAt, level, now);
+  if (ageBlocker) return ageBlocker;
+  if (workspace.recommendation !== "candidate") {
+    return workspace.reasons[0] ?? "The safety classification is incomplete.";
+  }
+  return null;
+}
 
-  const age = activityAgeDays(git.lastActivityAt, now);
+function worktreeAgeBlocker(timestamp: string | null, level: CleanupLevel, now: number): string | null {
+  if (level.minimumInactiveDays === null) return "Entire-worktree removal requires an age limit.";
+  if (level.minimumInactiveDays === 0) return null;
+  const age = activityAgeDays(timestamp, now);
   if (age === null) return "The last activity time is unknown.";
   if (age < level.minimumInactiveDays) {
     return `Used ${age} ${age === 1 ? "day" : "days"} ago; ${level.minimumInactiveDays}+ days required.`;
-  }
-  if (workspace.recommendation !== "candidate") {
-    return workspace.reasons[0] ?? "The safety classification is incomplete.";
   }
   return null;
 }
@@ -184,4 +219,12 @@ export function isWorkspaceInCleanupLevel(
 
   const age = activityAgeDays(workspace.git?.lastActivityAt, now);
   return age !== null && age >= level.minimumInactiveDays;
+}
+
+export function selectVisibleWorktrees(
+  selected: ReadonlySet<string>,
+  visiblePaths: readonly string[],
+  eligiblePaths: ReadonlySet<string>,
+): Set<string> {
+  return new Set([...selected, ...visiblePaths].filter((path) => eligiblePaths.has(path)));
 }

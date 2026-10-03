@@ -115,6 +115,17 @@ A cache directory must:
 4. resolve inside the workspace canonical path;
 5. still be present in a fresh inventory immediately before removal.
 
+It must also contain no tracked files. Compiler caches such as
+`ModuleCache.noindex` require Xcode DerivedData evidence from a regular,
+bounded-size `info.plist`; a familiar cache name alone is insufficient.
+Native compiler caches are separate targets, including when they are nested
+under a generic `build` directory. Broad build-output candidates are checked
+for nested Git repositories, Xcode DerivedData, `Products`, release archives,
+dSYMs, IPAs, and `.xcresult` bundles. Such containers are retained and traversed
+for narrower candidates. Artifact directories themselves are never traversed
+for cleanup. This check is bounded and fails closed on unreadable or overly
+large/deep contents; it never accepts a partly inspected build directory.
+
 `node_modules` also requires a recognized lockfile at the repository root.
 
 The desktop cleanup slider can prepare four increasingly broad plans: caches
@@ -131,6 +142,12 @@ Every completed or partial operation is appended to
 `~/.vibevac/audit.jsonl`. Cache cleanup preserves the workspace, source,
 branch, and Git history.
 
+The CLI `clean` command defaults to a preview. It requires an explicit exact
+workspace and either selected `--cache` paths or `--all` for that workspace.
+Deletion additionally requires `--execute` and the exact `--confirm` phrase
+from the preview. Execution repeats the inventory and process checks and uses
+the same audited cleanup service as the dashboard.
+
 Batch cleanup is a sequence of independent workspace transactions. Each one is
 revalidated immediately before removal and produces its own audit entry. If a
 workspace changes after preview, that workspace is skipped and reported rather
@@ -143,7 +160,7 @@ cache-slider level. Its four levels admit linked worktrees inactive for at least
 90, 60, 30, or 14 days. The slider filters eligibility only: no worktree is
 preselected, and every target needs an explicit checkbox selection.
 
-A removal plan must prove all of the following:
+By default, a removal plan must prove all of the following:
 
 1. the canonical target is a registered linked Git worktree, never a standalone
    repository or ordinary project folder;
@@ -162,8 +179,8 @@ A removal plan must prove all of the following:
 
 Execution repeats the complete proof for each selected worktree. It invokes
 `git worktree remove --force` through the common Git directory rather than
-recursively deleting a path. `--force` is permitted only after the fresh clean
-status and ignored-data allowlist proofs pass; it lets Git remove the verified
+recursively deleting a path. In the default mode, the fresh clean-status and
+ignored-data allowlist proofs must pass; it lets Git remove the verified
 ignored caches inside the otherwise clean checkout. If any proof changes, that
 worktree is skipped while the remaining explicit selections continue as
 independent transactions.
@@ -171,3 +188,41 @@ independent transactions.
 The branch, upstream refs, and common repository remain available. Each success
 or failure writes an audit entry to `~/.vibevac/audit.jsonl`; successful entries
 include a reconstruction command for recreating the checkout.
+
+Batch previews return independently verified plans and skipped workspaces with
+reasons. A workspace that becomes active or fails any other safety check is
+excluded from the review; it does not cancel the plans for other workspaces.
+Only accepted plans contribute to the confirmation count. If every selection
+is blocked, no removal plan is offered. Execution still revalidates each
+accepted workspace immediately before changing it.
+
+
+### Explicit manual override
+
+The entire-worktree scope includes a session-only override checkbox, off by
+default and reset when leaving that scope. The time slider stays visible and
+filters eligibility by the selected inactivity threshold, including when other
+protections are overridden. Manual mode adds **7+ days** and an explicit **All ages** endpoint
+(0 days) that includes recent and unknown activity. Zero is rejected without
+explicit override; switching override off returns that endpoint to 14 days.
+It bypasses merge, upstream,
+remote recovery, local-file, ignored-data, and active-process policies. It never
+preselects targets or stops processes. **Select all shown** is an explicit user
+action that selects only eligible rows matching the current view and search;
+other rows are not added. Changing the time filter clears the selection. Cache cleanup protections do not change.
+
+Both native and web backends default `force` to false and require an explicit
+boolean opt-in. An override preview reports all observable risks, including
+uncommitted entries, unpublished commits, ignored paths outside verified
+caches, and running processes. The exact canonical paths appear in review;
+typed confirmation includes `FORCE REMOVE` and the identities of every target.
+Execution requires the reviewed HEAD and warnings to match a fresh preview.
+Changed risks require a new review. Audit entries record the override and risks.
+
+Structural checks still require a registered, attached linked worktree with its
+common Git directory outside the target. A target containing another registered
+worktree in the same repository is blocked. Removal uses Git's single `--force`
+operation, retaining Git's locked-worktree and submodule restrictions. Branches
+and committed history remain in the common repository, including unpublished
+commits; reconstruction cannot recover uncommitted or ignored files. No backup
+or Trash recovery is implied.

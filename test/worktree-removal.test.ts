@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -78,6 +78,75 @@ async function fixtureWorktree(): Promise<{
 }
 
 describe("worktree removal", () => {
+  it("allows an all-ages threshold only with explicit override", async () => {
+    const fixture = await fixtureWorktree();
+    const request = { workspacePath: fixture.worktree, minimumInactiveDays: 0 };
+    const options = { processSnapshot: inactiveProcesses };
+    await expect(planWorktreeRemoval(request, options)).rejects.toThrow("inactivity threshold");
+    const plan = await planWorktreeRemoval({ ...request, force: true }, options);
+    expect(plan.force).toBe(true);
+    expect(plan.warnings.some((warning) => warning.includes("inactivity limit"))).toBe(false);
+  });
+
+  it("requires a distinct force confirmation and preserves unpublished commits", async () => {
+    const fixture = await fixtureWorktree();
+    await writeFile(resolve(fixture.worktree, "source.ts"), "unpublished commit\n");
+    await git(fixture.worktree, ["add", "source.ts"]);
+    await git(fixture.worktree, ["commit", "-m", "local work"]);
+    const head = await git(fixture.worktree, ["rev-parse", "HEAD"]);
+    await writeFile(resolve(fixture.worktree, "source.ts"), "uncommitted work\n");
+    await writeFile(resolve(fixture.worktree, ".secret"), "ignored data\n");
+    const request = { workspacePath: fixture.worktree, minimumInactiveDays: 90, force: true };
+    const options = {
+      processSnapshot: { ...inactiveProcesses, workingDirectories: new Map([[await realpath(fixture.worktree), 4]]) },
+      auditPath: fixture.auditPath,
+      now: Date.now(),
+    };
+    const plan = await planWorktreeRemoval(request, options);
+    expect(plan.force).toBe(true);
+    expect(plan.confirmation).toMatch(/^FORCE REMOVE /);
+    expect(plan.warnings.join(" ")).toMatch(/uncommitted/);
+    expect(plan.warnings.join(" ")).toMatch(/running process/);
+    expect(plan.warnings.join(" ")).toMatch(/not.*merged/);
+    expect(plan.warnings.join(" ")).toContain(".secret");
+    await expect(executeWorktreeRemoval({ ...request, confirmation: plan.confirmation.replace("FORCE ", "") }, options)).rejects.toThrow("Confirmation text");
+    await expect(access(fixture.worktree)).resolves.toBeUndefined();
+    await expect(executeWorktreeRemoval({ ...request, confirmation: plan.confirmation }, options)).rejects.toThrow("not reviewed");
+    await executeWorktreeRemoval({ ...request, confirmation: plan.confirmation, reviewedHead: plan.head, reviewedWarnings: plan.warnings }, options);
+    await expect(access(fixture.worktree)).rejects.toThrow();
+    expect(await git(fixture.repository, ["rev-parse", "agent/old"])).toBe(head);
+    const audit = JSON.parse((await readFile(fixture.auditPath, "utf8")).trim());
+    expect(audit.force).toBe(true);
+    expect(audit.warnings).toEqual(plan.warnings);
+  });
+
+  it("requires a new force review when risks or HEAD change before execution", async () => {
+    const fixture = await fixtureWorktree();
+    const request = { workspacePath: fixture.worktree, minimumInactiveDays: 14, force: true };
+    const options = { processSnapshot: inactiveProcesses, now: Date.now(), auditPath: fixture.auditPath };
+    const plan = await planWorktreeRemoval(request, options);
+    const approved = { ...request, confirmation: plan.confirmation, reviewedHead: plan.head, reviewedWarnings: plan.warnings };
+    await writeFile(resolve(fixture.worktree, "source.ts"), "new changes\n");
+    await expect(executeWorktreeRemoval(approved, options)).rejects.toThrow("risks changed");
+    await git(fixture.worktree, ["add", "source.ts"]);
+    await git(fixture.worktree, ["commit", "-m", "new commit"]);
+    await expect(executeWorktreeRemoval(approved, options)).rejects.toThrow("risks changed");
+    await expect(access(fixture.worktree)).resolves.toBeUndefined();
+  });
+
+  it("force works without upstream or remote proof but never on standalone repositories", async () => {
+    const fixture = await fixtureWorktree();
+    await git(fixture.worktree, ["branch", "--unset-upstream"]);
+    await git(fixture.repository, ["remote", "remove", "origin"]);
+    const options = { processSnapshot: inactiveProcesses, now: Date.now() };
+    const plan = await planWorktreeRemoval({ workspacePath: fixture.worktree, minimumInactiveDays: 14, force: true }, options);
+    expect(plan.upstream).toBeNull();
+    expect(plan.warnings.join(" ")).toContain("remote");
+    await expect(planWorktreeRemoval({ workspacePath: fixture.repository, minimumInactiveDays: 14, force: true }, options)).rejects.toThrow("Only registered linked");
+    await git(fixture.worktree, ["checkout", "--detach"]);
+    await expect(planWorktreeRemoval({ workspacePath: fixture.worktree, minimumInactiveDays: 14, force: true }, options)).rejects.toThrow("branch");
+  });
+
   it("plans and removes only a fully proven linked worktree", async () => {
     const fixture = await fixtureWorktree();
     const request = {
@@ -136,5 +205,13 @@ describe("worktree removal", () => {
         { processSnapshot: inactiveProcesses, now: fixture.now },
       ),
     ).rejects.toThrow("Only registered linked Git worktrees can be removed");
+  });
+
+  it("override does not remove a parent containing another registered worktree", async () => {
+    const fixture = await fixtureWorktree();
+    const nested = resolve(fixture.worktree, "nested");
+    await git(fixture.repository, ["worktree", "add", "-b", "agent/nested", nested]);
+    await expect(planWorktreeRemoval({ workspacePath: fixture.worktree, minimumInactiveDays: 14, force: true }, { processSnapshot: inactiveProcesses })).rejects.toThrow("nested registered worktree");
+    await expect(access(resolve(nested, "source.ts"))).resolves.toBeUndefined();
   });
 });
