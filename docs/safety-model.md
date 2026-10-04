@@ -128,6 +128,23 @@ large/deep contents; it never accepts a partly inspected build directory.
 
 `node_modules` also requires a recognized lockfile at the repository root.
 
+Ecosystem caches whose names are also ordinary words must prove which tool
+owns them before any other check runs:
+
+| Directory | Required proof |
+| --- | --- |
+| `target` | `Cargo.toml` beside it and Cargo's `CACHEDIR.TAG` or `.rustc_info.json` inside it |
+| `.venv`, `venv` | `pyvenv.cfg` inside it and a Python manifest beside it (`pyproject.toml`, `uv.lock`, `poetry.lock`, `Pipfile`, `Pipfile.lock`, `setup.py`, `setup.cfg`, or `requirements*.txt`) |
+| `.build` | `Package.swift` beside it |
+| `Pods` | `Manifest.lock` inside it and `Podfile.lock` beside it |
+| `.gradle` | `settings.gradle(.kts)` or `build.gradle(.kts)` beside it |
+| `.dart_tool` | `pubspec.yaml` beside it |
+
+Every proof file must be a regular file, not a symlink. A directory that fails
+its proof is neither offered nor traversed. Because the manifest identifies the
+owning tool, these outputs skip the broad build-output artifact scan; for
+example, dSYMs that Cargo writes under `target` are rebuildable.
+
 The desktop cleanup slider can prepare four increasingly broad plans: caches
 inactive for at least 90 days, 30 days, 14 days, or every verified cache. An
 unknown activity timestamp is included only in the explicit `Full cache`

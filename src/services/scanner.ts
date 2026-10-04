@@ -20,6 +20,7 @@ interface ScanOptions {
   includeSize?: boolean;
   concurrency?: number;
   staleAfterDays?: number;
+  onProgress?: (progress: { completed: number; total: number }) => void;
 }
 
 function errorMessage(error: unknown): string {
@@ -164,17 +165,23 @@ export async function scanWorkspaces(
     discoverWorkspaces(roots),
     inspectActiveProcesses(),
   ]);
+  let completed = 0;
+  options.onProgress?.({ completed, total: candidates.length });
   const scannedWorkspaces = await mapConcurrent(
     candidates,
     options.concurrency ?? 4,
-    (candidate) =>
-      scanCandidate(
+    async (candidate) => {
+      const workspace = await scanCandidate(
         candidate,
         options.includeSize ?? true,
         processes,
         staleAfterDays,
         now,
-      ),
+      );
+      completed += 1;
+      options.onProgress?.({ completed, total: candidates.length });
+      return workspace;
+    },
   );
   const workspaces = excludeNestedWorkspaceSizes(scannedWorkspaces);
 

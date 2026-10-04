@@ -141,6 +141,130 @@ export function renderHumanReport(report: ScanReport): string {
   return lines.join("\n");
 }
 
+const RELEASES_URL = "https://github.com/TargiX/vibevac/releases";
+
+function workspaceName(path: string): string {
+  return path.split("/").filter(Boolean).at(-1) ?? path;
+}
+
+function bar(value: number, max: number, width: number): string {
+  const length = max > 0 ? Math.max(1, Math.round((value / max) * width)) : 0;
+  return pc.green("━".repeat(length));
+}
+
+// The default scan output: one figure worth sharing, where it comes from, and
+// what to do next. `renderHumanReport` keeps the full evidence table.
+export function renderScanSummary(report: ScanReport, now = Date.now()): string {
+  const sizeSkipped =
+    report.workspaces.length > 0 &&
+    report.workspaces.every((workspace) => workspace.sizeBytes === null);
+  const lines = ["", `  ${pc.bold("VibeVac")}  ${pc.dim("read-only scan · nothing was changed")}`, ""];
+
+  if (report.workspaces.length === 0) {
+    lines.push(
+      "  No Git workspaces found in the default sources.",
+      pc.dim("  Point VibeVac at a folder of projects:  vibevac --root ~/code"),
+      "",
+    );
+    return lines.join("\n");
+  }
+
+  if (sizeSkipped) {
+    lines.push(
+      `  ${report.workspaces.length} workspaces found. Sizes and caches were skipped.`,
+      pc.dim("  Run without --no-size to measure rebuildable storage."),
+      "",
+    );
+    return lines.join("\n");
+  }
+
+  const ready = report.workspaces.filter(
+    (workspace) => workspace.cacheCleanupAllowed && workspace.cacheBytes > 0,
+  );
+  const heldBack = report.workspaces.filter(
+    (workspace) => !workspace.cacheCleanupAllowed && workspace.cacheBytes > 0,
+  );
+  const heldBackBytes = heldBack.reduce((total, workspace) => total + workspace.cacheBytes, 0);
+  const figure = formatBytes(report.reclaimableCacheBytes);
+
+  lines.push(
+    `  ${pc.bold(pc.green(figure))}  rebuildable storage ready to review`,
+    `  ${" ".repeat(figure.length)}  ${pc.dim(
+      `in ${ready.length} of ${report.workspaces.length} workspaces · ${formatBytes(report.totalSizeBytes)} scanned`,
+    )}`,
+    "",
+  );
+
+  if (ready.length > 0) {
+    const byType = new Map<string, number>();
+    for (const workspace of ready) {
+      for (const cache of workspace.caches) {
+        byType.set(cache.name, (byType.get(cache.name) ?? 0) + (cache.sizeBytes ?? 0));
+      }
+    }
+    const types = [...byType].sort((left, right) => right[1] - left[1]);
+    const shownTypes = types.slice(0, 6);
+    const largestType = shownTypes[0]?.[1] ?? 0;
+    const typeWidth = Math.max(...shownTypes.map(([name]) => name.length));
+    lines.push(`  ${pc.bold("By type")}`);
+    for (const [name, bytes] of shownTypes) {
+      lines.push(
+        `    ${name.padEnd(typeWidth)}  ${formatBytes(bytes).padStart(7)}  ${bar(bytes, largestType, 24)}`,
+      );
+    }
+    const otherTypes = types.slice(shownTypes.length);
+    if (otherTypes.length > 0) {
+      const otherBytes = otherTypes.reduce((total, [, bytes]) => total + bytes, 0);
+      lines.push(pc.dim(`    + ${otherTypes.length} more types, ${formatBytes(otherBytes)}`));
+    }
+
+    const largest = [...ready].sort((left, right) => right.cacheBytes - left.cacheBytes).slice(0, 5);
+    const nameWidth = Math.min(28, Math.max(...largest.map((workspace) => workspaceName(workspace.path).length)));
+    lines.push("", `  ${pc.bold("Largest")}`);
+    for (const workspace of largest) {
+      const kinds = [...new Set(workspace.caches.map((cache) => workspaceName(cache.relativePath)))]
+        .slice(0, 3)
+        .join(", ");
+      const idle = formatAge(workspace.git?.lastActivityAt ?? null, now);
+      lines.push(
+        `    ${formatBytes(workspace.cacheBytes).padStart(7)}  ${truncate(workspaceName(workspace.path), nameWidth).padEnd(nameWidth)}  ${pc.dim(
+          `${kinds} · ${idle === "today" ? "used today" : `${idle} idle`}`,
+        )}`,
+      );
+    }
+    lines.push("");
+  } else {
+    lines.push("  Nothing is ready to clean right now.", "");
+  }
+
+  if (heldBack.length > 0) {
+    lines.push(
+      pc.dim(
+        `  ${formatBytes(heldBackBytes)} more in ${heldBack.length} ${heldBack.length === 1 ? "workspace is" : "workspaces are"} held back by a running process or a failed check.`,
+      ),
+    );
+  }
+  if (!report.processCheckAvailable) {
+    lines.push(
+      pc.yellow("  The active-process check is unavailable (lsof), so cleanup stays blocked."),
+    );
+  }
+  if (heldBack.length > 0 || !report.processCheckAvailable) lines.push("");
+
+  const example = ready[0] ? compactPath(ready[0].path) : "<workspace>";
+  lines.push(
+    `  ${pc.bold("Next")}`,
+    pc.dim("    Preview one workspace. This removes nothing."),
+    `      vibevac clean ${example} --all`,
+    pc.dim("    See the evidence for every workspace."),
+    "      vibevac --details",
+    pc.dim("    Review and clean in batches in the desktop app."),
+    `      ${RELEASES_URL}`,
+    "",
+  );
+  return lines.join("\n");
+}
+
 export function renderWorkspaceInspection(
   workspace: WorkspaceReport,
   staleAfterDays: number,

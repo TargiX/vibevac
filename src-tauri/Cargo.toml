@@ -1,6 +1,6 @@
 [package]
 name = "vibevac"
-version = "0.1.0"
+version = "0.2.0"
 description = "Keep the work. Vacuum rebuildable weight from AI coding workspaces."
 authors = ["Ilya Moskovkin"]
 edition = "2021"

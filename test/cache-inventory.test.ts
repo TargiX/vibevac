@@ -104,4 +104,75 @@ describe("rebuildable cache inventory", () => {
 
     expect(result.map((cache) => cache.relativePath)).toEqual(["node_modules"]);
   });
+
+  it("finds tool-owned caches across ecosystems when their manifests prove ownership", async () => {
+    const root = await createRepository(false);
+    await writeFile(
+      resolve(root, ".gitignore"),
+      "target/\n.venv/\n.build/\nPods/\n.gradle/\n.dart_tool/\n",
+    );
+    const files: Record<string, string> = {
+      "Cargo.toml": "[package]\nname = \"fixture\"\n",
+      "target/.rustc_info.json": "{}",
+      "target/debug/deps/fixture.dSYM/Contents/Info.plist": "rebuildable symbols",
+      "target/debug/build/fixture-1/out/generated.rs": "// generated",
+      "pyproject.toml": "[project]\nname = \"fixture\"\n",
+      ".venv/pyvenv.cfg": "home = /usr/bin\n",
+      ".venv/lib/site.py": "# installed",
+      "Package.swift": "// swift-tools-version:5.9\n",
+      ".build/debug/App": "binary",
+      "Podfile.lock": "PODS: []\n",
+      "Pods/Manifest.lock": "PODS: []\n",
+      "settings.gradle.kts": "rootProject.name = \"fixture\"\n",
+      ".gradle/8.0/fileHashes.bin": "cache",
+      "pubspec.yaml": "name: fixture\n",
+      ".dart_tool/package_config.json": "{}",
+    };
+    for (const [path, content] of Object.entries(files)) {
+      await mkdir(resolve(root, path, ".."), { recursive: true });
+      await writeFile(resolve(root, path), content);
+    }
+
+    const result = await inventoryRebuildableCaches(root);
+
+    expect(result.map((cache) => cache.relativePath).sort()).toEqual([
+      ".build",
+      ".dart_tool",
+      ".gradle",
+      ".venv",
+      "Pods",
+      "target",
+    ]);
+    expect(result.find((cache) => cache.relativePath === "target")?.name).toBe(
+      "Rust build output",
+    );
+  });
+
+  it("does not trust common directory names without their tool's proof", async () => {
+    const root = await createRepository(false);
+    await writeFile(
+      resolve(root, ".gitignore"),
+      "target/\nvenv/\n.venv/\n.build/\nPods/\n.gradle/\n.dart_tool/\n",
+    );
+    const files: Record<string, string> = {
+      // Cargo.toml without a Cargo marker inside target, e.g. a Maven target.
+      "Cargo.toml": "[package]\nname = \"fixture\"\n",
+      "target/classes/App.class": "compiled",
+      // A virtual environment marker without any Python manifest beside it.
+      "tools/venv/pyvenv.cfg": "home = /usr/bin\n",
+      // A Python manifest next to a directory that is not a virtual environment.
+      "requirements-dev.txt": "pytest\n",
+      ".venv/notes.md": "not an environment",
+      ".build/output.bin": "no Package.swift",
+      "Pods/Manifest.lock": "no Podfile.lock",
+      ".gradle/cache.bin": "no Gradle build file",
+      ".dart_tool/package_config.json": "no pubspec",
+    };
+    for (const [path, content] of Object.entries(files)) {
+      await mkdir(resolve(root, path, ".."), { recursive: true });
+      await writeFile(resolve(root, path), content);
+    }
+
+    expect(await inventoryRebuildableCaches(root)).toEqual([]);
+  });
 });

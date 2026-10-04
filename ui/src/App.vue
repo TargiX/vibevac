@@ -7,6 +7,8 @@ import {
   ArrowUpDown,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Database,
   FolderGit2,
@@ -20,7 +22,7 @@ import {
   Trash2,
   X,
 } from "@lucide/vue";
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 
 import {
   chooseWorkspaceSource,
@@ -140,6 +142,9 @@ const sourcesOpen = ref(false);
 const pickingSource = ref(false);
 const customRoots = ref(loadCustomRoots());
 const nativeBackend = usesNativeBackend();
+const heroElement = ref<HTMLElement | null>(null);
+const heroVisible = ref(true);
+let heroObserver: IntersectionObserver | null = null;
 let scanTimer: number | null = null;
 let scanInFlight = false;
 
@@ -383,6 +388,46 @@ function formatBytes(bytes: number | null): string {
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${unit}`;
 }
 
+function bytesParts(bytes: number): { value: string; unit: string } {
+  const [value = "0", unit = ""] = formatBytes(bytes).split(" ");
+  return { value, unit };
+}
+
+const heroFigure = computed(() => {
+  if (cleanupScope.value === "cache") {
+    return {
+      ...bytesParts(cleanupReadyBytes.value),
+      caption: cleanupReadyWorkspaces.value.length
+        ? `across ${cleanupReadyWorkspaces.value.length} ${cleanupReadyWorkspaces.value.length === 1 ? "workspace" : "workspaces"}`
+        : "nothing matches this level",
+    };
+  }
+  if (selectedWorktreeWorkspaces.value.length) {
+    return {
+      ...bytesParts(selectedWorktreeBytes.value),
+      caption: `selected across ${selectedWorktreeWorkspaces.value.length} ${selectedWorktreeWorkspaces.value.length === 1 ? "worktree" : "worktrees"}`,
+    };
+  }
+  return {
+    value: String(cleanupReadyWorkspaces.value.length),
+    unit: `/ ${report.value?.workspaces.length ?? 0}`,
+    caption: "workspaces eligible for removal",
+  };
+});
+
+const ctaDisabled = computed(() =>
+  !scanPresentation.value.reportInteractive ||
+  (cleanupScope.value === "worktree"
+    ? previewingWorktrees.value ||
+      removingWorktrees.value ||
+      (selectedWorktreeWorkspaces.value.length === 0 && visibleEligibleWorktrees.value.length === 0)
+    : previewingCleanup.value),
+);
+
+function stepCleanupLevel(delta: number): void {
+  setCleanupLevel(cleanupLevelIndex.value + delta);
+}
+
 function formatAge(timestamp: string | null | undefined): string {
   if (!timestamp) return "Unknown";
   const days = Math.max(
@@ -404,11 +449,6 @@ function formatScanTime(timestamp: string | undefined): string {
 
 function workspaceName(path: string): string {
   return path.split("/").filter(Boolean).at(-1) ?? path;
-}
-
-function workspaceParent(path: string): string {
-  const segments = path.split("/").filter(Boolean);
-  return segments.at(-2) ?? "Workspace";
 }
 
 function compactPath(path: string): string {
@@ -975,19 +1015,93 @@ async function executeWorktreeRemoval(): Promise<void> {
   }
 }
 
+function observeHero(element: HTMLElement | null): void {
+  heroObserver?.disconnect();
+  heroObserver = null;
+  if (!element) {
+    heroVisible.value = true;
+    return;
+  }
+  heroObserver = new IntersectionObserver(
+    ([entry]) => {
+      heroVisible.value = entry?.isIntersecting ?? true;
+    },
+    { rootMargin: "-64px 0px 0px 0px" },
+  );
+  heroObserver.observe(element);
+}
+
+watch(heroElement, observeHero);
+
 onMounted(refresh);
-onUnmounted(stopScanTimer);
+onUnmounted(() => {
+  stopScanTimer();
+  heroObserver?.disconnect();
+});
 </script>
 
 <template>
   <div class="app-shell">
-    <header class="topbar">
+    <header class="topbar" :class="{ condensed: report && !heroVisible }">
       <div class="brand">
         <img class="brand-mark" src="/vibevac-icon.png" alt="" />
-        <div>
+        <div class="brand-copy">
           <div class="brand-name">VibeVac</div>
-          <div class="brand-subtitle">Workspace storage</div>
+          <div class="brand-subtitle">
+            <template v-if="!report">Workspace storage</template>
+            <template v-else-if="scanPresentation.phase === 'refreshing'">
+              Updating {{ report.workspaces.length }} workspaces · {{ scanElapsedSeconds }}s
+            </template>
+            <template v-else-if="scanPresentation.phase === 'stale'">
+              Previous scan is no longer current
+            </template>
+            <template v-else>
+              {{ report.workspaces.length }} workspaces · {{ report.roots.length }} sources ·
+              {{ formatScanTime(report.generatedAt) }}
+            </template>
+          </div>
         </div>
+      </div>
+
+      <div
+        v-if="report"
+        class="topbar-summary"
+        :class="`tone-${currentCleanupPresentationTone}`"
+        :aria-hidden="heroVisible ? 'true' : undefined"
+        :inert="heroVisible ? true : undefined"
+      >
+        <div class="topbar-level">
+          <button
+            type="button"
+            aria-label="Use a more careful level"
+            :disabled="cleanupLevelIndex === 0 || !scanPresentation.reportInteractive"
+            @click="stepCleanupLevel(-1)"
+          >
+            <ChevronLeft :size="14" />
+          </button>
+          <span>{{ currentCleanupLevel.label }}</span>
+          <button
+            type="button"
+            aria-label="Use a wider level"
+            :disabled="cleanupLevelIndex === currentCleanupLevels.length - 1 || !scanPresentation.reportInteractive"
+            @click="stepCleanupLevel(1)"
+          >
+            <ChevronRight :size="14" />
+          </button>
+        </div>
+        <div class="topbar-figure">
+          <strong>{{ heroFigure.value }}<small>{{ heroFigure.unit }}</small></strong>
+          <span>{{ heroFigure.caption }}</span>
+        </div>
+        <button
+          v-if="cleanupReadyWorkspaces.length"
+          class="primary-button tone-button"
+          :disabled="ctaDisabled"
+          @click="reviewCurrentScope"
+        >
+          {{ cleanupScope === "worktree" && !selectedWorktreeWorkspaces.length ? "Select all" : "Review" }}
+          <ArrowRight :size="14" />
+        </button>
       </div>
 
       <div class="topbar-actions">
@@ -997,7 +1111,7 @@ onUnmounted(stopScanTimer);
           Sources
           <span>{{ report?.roots.length ?? "…" }}</span>
         </button>
-        <button class="scan-button" :disabled="loading" @click="refresh">
+        <button class="toolbar-button" :disabled="loading" @click="refresh">
           <RefreshCw :size="15" :class="{ spinning: loading }" />
           {{ loading ? "Scanning" : "Scan" }}
         </button>
@@ -1052,24 +1166,7 @@ onUnmounted(stopScanTimer);
     </div>
 
     <main>
-      <section class="page-heading">
-        <div>
-          <h1>Workspaces</h1>
-          <p v-if="report">
-            <template v-if="scanPresentation.phase === 'refreshing'">
-              Updating {{ report.workspaces.length }} workspaces · {{ scanElapsedSeconds }}s
-            </template>
-            <template v-else-if="scanPresentation.phase === 'stale'">
-              Previous scan is no longer current
-            </template>
-            <template v-else>
-              {{ report.workspaces.length }} found across {{ report.roots.length }} sources ·
-              {{ formatScanTime(report.generatedAt) }}
-            </template>
-          </p>
-          <p v-else>Review local work and rebuildable storage.</p>
-        </div>
-      </section>
+      <h1 class="visually-hidden">Workspaces</h1>
 
       <div v-if="error" class="notice notice-error">
         <AlertTriangle :size="17" />
@@ -1152,18 +1249,15 @@ onUnmounted(stopScanTimer);
 
       <section
         v-if="report"
-        class="cleanup-callout"
+        ref="heroElement"
+        class="hero"
         :class="[
           `tone-${currentCleanupPresentationTone}`,
           { 'all-clear': cleanupReadyWorkspaces.length === 0 },
         ]"
       >
-        <div class="cleanup-scope-bar">
-          <div>
-            <strong>Cleanup scope</strong>
-            <span>Choose what may enter the review plan.</span>
-          </div>
-          <div class="scope-segmented" role="radiogroup" aria-label="Cleanup scope">
+        <div class="hero-top">
+          <div class="scope-tabs" role="radiogroup" aria-label="Cleanup scope">
             <button
               class="cache-scope"
               type="button"
@@ -1187,119 +1281,111 @@ onUnmounted(stopScanTimer);
               Entire worktrees
             </button>
           </div>
+          <span class="hero-scope-hint">Choose what may enter the review plan</span>
         </div>
 
-        <div class="cleanup-callout-icon">
-          <AlertTriangle v-if="cleanupScope === 'worktree'" :size="22" />
-          <ShieldCheck v-else-if="cleanupReadyWorkspaces.length" :size="22" />
-          <Check v-else :size="22" />
-        </div>
-        <div class="cleanup-callout-copy">
-          <span>
-            {{ cleanupScope === "worktree" ? "Worktree removal" : "Cleanup level" }} ·
-            {{ forceWorktreeRemoval ? `Manual override · ${currentCleanupLevel.shortLabel}` : currentCleanupLevel.label }}
-          </span>
-          <template v-if="cleanupScope === 'cache'">
-            <h2 v-if="cleanupReadyWorkspaces.length">
-              {{ formatBytes(cleanupReadyBytes) }} across {{ cleanupReadyWorkspaces.length }}
-              {{ cleanupReadyWorkspaces.length === 1 ? "workspace" : "workspaces" }}
+        <div class="hero-body">
+          <div class="hero-figure">
+            <span class="hero-eyebrow">
+              {{ cleanupScope === "worktree" ? "Worktree removal" : "Ready to reclaim" }} ·
+              {{ forceWorktreeRemoval ? `Manual override · ${currentCleanupLevel.shortLabel}` : currentCleanupLevel.label }}
+            </span>
+            <h2 class="hero-number">
+              {{ heroFigure.value }}<span>{{ heroFigure.unit }}</span>
             </h2>
-            <h2 v-else>Nothing matches this cleanup level</h2>
-            <p v-if="cleanupReadyWorkspaces.length">
-              {{ currentCleanupLevel.description }} Only verified rebuildable storage is included;
-              source files and Git history stay untouched.
-            </p>
-            <p v-else>
-              Move the slider right to include more verified caches. Active workspaces remain
-              blocked.
-            </p>
-          </template>
-          <template v-else>
-            <h2 v-if="selectedWorktreeWorkspaces.length">
-              {{ formatBytes(selectedWorktreeBytes) }} selected across
-              {{ selectedWorktreeWorkspaces.length }}
-              {{ selectedWorktreeWorkspaces.length === 1 ? "worktree" : "worktrees" }}
-            </h2>
-            <h2 v-else>
-              {{ cleanupReadyWorkspaces.length }} of {{ report.workspaces.length }} workspaces are
-              eligible
-            </h2>
-            <label class="force-worktree-toggle">
-              <input
-                type="checkbox"
-                :checked="forceWorktreeRemoval"
-                :disabled="previewingWorktrees || removingWorktrees"
-                @change="setForceWorktreeRemoval(($event.target as HTMLInputElement).checked)"
+            <p class="hero-caption">{{ heroFigure.caption }}</p>
+          </div>
+
+          <div class="hero-side">
+            <template v-if="cleanupScope === 'cache'">
+              <p v-if="cleanupReadyWorkspaces.length">
+                {{ currentCleanupLevel.description }} Only verified rebuildable storage is included;
+                source files and Git history stay untouched.
+              </p>
+              <p v-else>
+                Move the level right to include more verified caches. Active workspaces remain
+                blocked.
+              </p>
+            </template>
+            <template v-else>
+              <label class="force-worktree-toggle">
+                <input
+                  type="checkbox"
+                  :checked="forceWorktreeRemoval"
+                  :disabled="previewingWorktrees || removingWorktrees"
+                  @change="setForceWorktreeRemoval(($event.target as HTMLInputElement).checked)"
+                />
+                <span class="switch-visual" aria-hidden="true"></span>
+                Allow removal of protected worktrees
+              </label>
+              <p v-if="forceWorktreeRemoval">
+                The time filter stays active: {{ currentCleanupLevel.minimumInactiveDays === 0
+                  ? "all ages, including today and unknown activity"
+                  : `untouched for ${currentCleanupLevel.shortLabel}` }}.
+                Manual override ignores merge, remote, local-file, and process protections.
+                Local and ignored files will be permanently deleted. Running tasks may break;
+                VibeVac will not stop them. Select worktrees individually or select all shown, then review their risks before confirming.
+              </p>
+              <p v-else>
+                {{ currentCleanupLevel.label }} changes only the age gate to
+                {{ currentCleanupLevel.shortLabel }}. Clean, synced, merged, linked-worktree, and
+                process checks stay enforced; {{ worktreeProtectedCount }} remain protected.
+              </p>
+              <p v-if="!cleanupReadyWorkspaces.length">
+                {{ worktreeProtectionSummary.map(([reason, count]) => `${count} ${reason.toLowerCase()}`).join(" · ") }}.
+                Verified caches can still be cleaned separately.
+              </p>
+              <div class="hero-links">
+                <button v-if="!cleanupReadyWorkspaces.length" class="text-link" @click="setCleanupScope('cache')">
+                  Review rebuildable caches <ArrowRight :size="13" />
+                </button>
+                <button class="text-link" @click="toggleWorktreeVisibility">
+                  {{
+                    filter === "ready"
+                      ? `Show all ${report.workspaces.length} with reasons`
+                      : `Show ${cleanupReadyWorkspaces.length} eligible only`
+                  }}
+                  <ArrowRight :size="13" />
+                </button>
+              </div>
+            </template>
+
+            <button
+              v-if="cleanupReadyWorkspaces.length"
+              class="primary-button tone-button hero-cta"
+              :disabled="ctaDisabled"
+              @click="reviewCurrentScope"
+            >
+              <LoaderCircle
+                v-if="previewingCleanup || previewingWorktrees"
+                :size="16"
+                class="spinning"
               />
-              Allow removal of protected worktrees
-            </label>
-            <p v-if="forceWorktreeRemoval">
-              The time filter stays active: {{ currentCleanupLevel.minimumInactiveDays === 0
-                ? "all ages, including today and unknown activity"
-                : `untouched for ${currentCleanupLevel.shortLabel}` }}.
-              Manual override ignores merge, remote, local-file, and process protections.
-              Local and ignored files will be permanently deleted. Running tasks may break;
-              VibeVac will not stop them. Select worktrees individually or select all shown, then review their risks before confirming.
-            </p>
-            <p v-else>
-              {{ currentCleanupLevel.label }} changes only the age gate to
-              {{ currentCleanupLevel.shortLabel }}. Clean, synced, merged, linked-worktree, and
-              process checks stay enforced; {{ worktreeProtectedCount }} remain protected.
-            </p>
-            <p v-if="!cleanupReadyWorkspaces.length">
-              {{ worktreeProtectionSummary.map(([reason, count]) => `${count} ${reason.toLowerCase()}`).join(" · ") }}.
-              Verified caches can still be cleaned separately.
-            </p>
-            <button v-if="!cleanupReadyWorkspaces.length" class="worktree-visibility-button" @click="setCleanupScope('cache')">
-              Review rebuildable caches <ArrowRight :size="13" />
+              <template v-if="cleanupScope === 'worktree' && previewingWorktrees">
+                Proving {{ worktreeProgress.total }}
+                {{ worktreeProgress.total === 1 ? "worktree" : "worktrees" }}
+              </template>
+              <template v-else-if="cleanupScope === 'worktree'">
+                {{ selectedWorktreeWorkspaces.length ? `Review ${selectedWorktreeWorkspaces.length} selected` : `Select all ${visibleEligibleWorktrees.length} shown` }}
+                <ArrowRight :size="16" />
+              </template>
+              <template v-else-if="previewingCleanup">
+                Checking {{ cleanupProgress.total }}
+                {{ cleanupProgress.total === 1 ? "workspace" : "workspaces" }}
+              </template>
+              <template v-else>
+                Review cleanup
+                <ArrowRight :size="16" />
+              </template>
             </button>
-            <button class="worktree-visibility-button" @click="toggleWorktreeVisibility">
-              {{
-                filter === "ready"
-                  ? `Show all ${report.workspaces.length} with reasons`
-                  : `Show ${cleanupReadyWorkspaces.length} eligible only`
-              }}
-              <ArrowRight :size="13" />
-            </button>
-          </template>
+          </div>
         </div>
-        <button
-          v-if="cleanupReadyWorkspaces.length"
-          class="cleanup-cta-button"
-          :disabled="
-            cleanupScope === 'worktree'
-              ? previewingWorktrees || removingWorktrees || (selectedWorktreeWorkspaces.length === 0 && visibleEligibleWorktrees.length === 0)
-              : previewingCleanup
-          "
-          @click="reviewCurrentScope"
-        >
-          <LoaderCircle
-            v-if="previewingCleanup || previewingWorktrees"
-            :size="16"
-            class="spinning"
-          />
-          <template v-if="cleanupScope === 'worktree' && previewingWorktrees">
-            Proving {{ worktreeProgress.total }}
-            {{ worktreeProgress.total === 1 ? "worktree" : "worktrees" }}
-          </template>
-          <template v-else-if="cleanupScope === 'worktree'">
-            {{ selectedWorktreeWorkspaces.length ? `Review ${selectedWorktreeWorkspaces.length} selected` : `Select all ${visibleEligibleWorktrees.length} shown` }}
-            <ArrowRight :size="16" />
-          </template>
-          <template v-else-if="previewingCleanup">
-            Checking {{ cleanupProgress.total }}
-            {{ cleanupProgress.total === 1 ? "workspace" : "workspaces" }}
-          </template>
-          <template v-else>
-            Review cleanup
-            <ArrowRight :size="16" />
-          </template>
-        </button>
 
         <div
-          class="cleanup-level-control"
+          class="level-control"
           :style="{
             '--cleanup-progress': `${(cleanupLevelIndex / (currentCleanupLevels.length - 1)) * 100}%`,
+            '--level-count': currentCleanupLevels.length,
           }"
         >
           <input
@@ -1313,11 +1399,19 @@ onUnmounted(stopScanTimer);
             :aria-valuetext="`${currentCleanupLevel.label}: ${currentCleanupLevel.shortLabel}`"
             @input="setCleanupLevel(Number(($event.target as HTMLInputElement).value))"
           />
-          <div class="cleanup-level-labels" :style="{ gridTemplateColumns: `repeat(${currentCleanupLevels.length}, 1fr)` }">
+          <div class="level-ticks" aria-hidden="true">
+            <span
+              v-for="level in currentCleanupLevels"
+              :key="level.index"
+              :class="{ reached: level.index <= cleanupLevelIndex }"
+            ></span>
+          </div>
+          <div class="cleanup-level-labels">
             <button
               v-for="level in currentCleanupLevels"
               :key="level.index"
               type="button"
+              :style="{ '--i': level.index }"
               :class="{ active: level.index === cleanupLevelIndex }"
               :aria-label="`Use ${level.label} cleanup: ${level.shortLabel}`"
               @click="setCleanupLevel(level.index)"
@@ -1329,32 +1423,25 @@ onUnmounted(stopScanTimer);
         </div>
       </section>
 
-      <section v-if="report" class="summary-grid">
-        <article class="metric-card">
-          <span>Total workspace storage</span>
-          <strong>{{ formatBytes(report.totalSizeBytes) }}</strong>
-          <small>{{ report.workspaces.length }} workspaces</small>
-        </article>
-        <article class="metric-card">
-          <span>Rebuildable</span>
-          <strong>{{ formatBytes(report.totalCacheBytes) }}</strong>
-          <small>Dependencies and generated output</small>
-        </article>
-        <article class="metric-card">
-          <span>Retained files</span>
-          <strong>{{ formatBytes(report.retainedSizeBytes) }}</strong>
-          <small>Source, Git, and files outside verified caches</small>
-        </article>
-        <article class="storage-card">
-          <div>
-            <span>Storage composition</span>
-            <small>{{ Math.round(storageSegments.cache) }}% rebuildable</small>
+      <section v-if="report" class="composition" aria-label="Workspace storage composition">
+        <div class="composition-bar">
+          <div class="storage-segment cache" :style="{ width: `${storageSegments.cache}%` }"></div>
+          <div class="storage-segment retained" :style="{ width: `${storageSegments.retained}%` }"></div>
+        </div>
+        <dl class="composition-legend">
+          <div class="legend-cache">
+            <dt>Rebuildable</dt>
+            <dd>{{ formatBytes(report.totalCacheBytes) }}<small>{{ Math.round(storageSegments.cache) }}%</small></dd>
           </div>
-          <div class="storage-bar" aria-label="Workspace storage composition">
-            <div class="storage-segment cache" :style="{ width: `${storageSegments.cache}%` }"></div>
-            <div class="storage-segment retained" :style="{ width: `${storageSegments.retained}%` }"></div>
+          <div class="legend-retained">
+            <dt>Retained · source, Git, unverified files</dt>
+            <dd>{{ formatBytes(report.retainedSizeBytes) }}</dd>
           </div>
-        </article>
+          <div class="legend-total">
+            <dt>Total in {{ report.workspaces.length }} workspaces</dt>
+            <dd>{{ formatBytes(report.totalSizeBytes) }}</dd>
+          </div>
+        </dl>
       </section>
 
       <div class="content-layout">
@@ -1540,16 +1627,14 @@ onUnmounted(stopScanTimer);
             >
               <div class="workspace-main">
                 <button class="workspace-identity" @click="toggleExpanded(workspace.path)">
-                  <div class="workspace-icon"><FolderGit2 :size="16" /></div>
-                  <div>
-                    <h3>{{ workspaceName(workspace.path) }}</h3>
-                    <p>
-                      {{ workspaceToolLabel(workspace.tool) }} · {{ workspaceParent(workspace.path) }} ·
-                      {{ compactPath(workspace.path) }}
-                    </p>
-                  </div>
+                  <h3>{{ workspaceName(workspace.path) }}</h3>
+                  <p>
+                    <span class="tool-tag">{{ workspaceToolLabel(workspace.tool) }}</span>
+                    {{ compactPath(workspace.path) }}
+                  </p>
                 </button>
                 <div class="recommendation" :class="workspace.recommendation">
+                  <span class="status-dot" :class="workspace.recommendation"></span>
                   {{ recommendationLabel(workspace.recommendation) }}
                 </div>
                 <div class="workspace-stat">
@@ -1574,16 +1659,14 @@ onUnmounted(stopScanTimer);
                       )
                     }}
                   </strong>
-                  <small>
-                    {{
-                      cleanupScope === "worktree"
-                        ? "Entire checkout"
-                        : `${Math.round(cachePercent(workspace))}%`
-                    }}
+                  <small v-if="cleanupScope === 'worktree'">Entire checkout</small>
+                  <small v-else class="ratio-meter">
+                    <span><i :style="{ width: `${cachePercent(workspace)}%` }"></i></span>
+                    {{ Math.round(cachePercent(workspace)) }}%
                   </small>
                 </div>
                 <div class="workspace-stat activity-stat">
-                  <strong><Clock3 :size="13" /> {{ formatAge(workspace.git?.lastActivityAt) }}</strong>
+                  <strong>{{ formatAge(workspace.git?.lastActivityAt) }}</strong>
                 </div>
                 <label
                   v-if="
@@ -1640,10 +1723,6 @@ onUnmounted(stopScanTimer);
                 >
                   <ChevronDown :size="17" class="chevron" />
                 </button>
-              </div>
-
-              <div v-if="cleanupScope === 'cache'" class="cache-ratio">
-                <div :style="{ width: `${cachePercent(workspace)}%` }"></div>
               </div>
 
               <div v-if="expandedPaths.has(workspace.path)" class="workspace-details">

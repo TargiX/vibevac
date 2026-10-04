@@ -1,0 +1,100 @@
+name: Publish packages
+
+# Runs when a release is published (not when the draft is created), so npm and
+# Homebrew only point at artifacts the maintainer has reviewed and made public.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  npm:
+    name: Publish CLI to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check tag matches package version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: test "$TAG" = "v$(node -p "require('./package.json').version")"
+
+      - name: Validate
+        run: |
+          pnpm typecheck
+          pnpm test
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN is not set; skipping npm publish"
+            exit 0
+          fi
+          npm publish --access public --provenance
+
+  homebrew:
+    name: Update Homebrew tap
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Render and push cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set; skipping Homebrew tap update"
+            exit 0
+          fi
+          VERSION="${TAG#v}"
+          gh release download "$TAG" --pattern SHA256SUMS.txt --repo "$GITHUB_REPOSITORY"
+          DMG_SHA=$(awk -v name="VibeVac_${VERSION}_universal.dmg" '$2 == name { print $1 }' SHA256SUMS.txt)
+          test -n "$DMG_SHA"
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/TargiX/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          sed -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
+              -e "s/^  sha256 \".*\"/  sha256 \"${DMG_SHA}\"/" \
+              packaging/homebrew/vibevac.rb > tap/Casks/vibevac.rb
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/vibevac.rb
+          git diff --cached --quiet && exit 0
+          git commit -m "vibevac ${VERSION}"
+          git push

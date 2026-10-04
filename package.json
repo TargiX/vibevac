@@ -1,7 +1,7 @@
 {
   "name": "vibevac",
-  "version": "0.1.0",
-  "description": "Keep the work. Vacuum rebuildable weight from AI coding workspaces.",
+  "version": "0.2.0",
+  "description": "See and safely reclaim rebuildable storage left by AI coding agents: node_modules, Rust target, Python venvs, build caches and stale Git worktrees.",
   "author": "Ilya Moskovkin",
   "license": "MIT",
   "homepage": "https://github.com/TargiX/vibevac#readme",
@@ -18,7 +18,6 @@
   },
   "files": [
     "dist",
-    "docs",
     "README.md",
     "LICENSE"
   ],
@@ -34,7 +33,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit -p ui/tsconfig.json",
-    "check": "pnpm typecheck && pnpm test && pnpm build"
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "prepublishOnly": "pnpm build"
   },
   "keywords": [
     "ai",
@@ -44,23 +44,31 @@
     "git",
     "worktree",
     "disk-cleanup",
-    "developer-tools"
+    "developer-tools",
+    "vibe-coding",
+    "ai-agents",
+    "node_modules",
+    "disk-space",
+    "cleanup",
+    "cli",
+    "rust",
+    "python"
   ],
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-dialog": "^2.7.1",
     "commander": "^14.0.0",
     "open": "^10.2.0",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
+    "@lucide/vue": "^1.0.0",
+    "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/cli": "^2.11.4",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "@types/node": "^24.0.0",
     "@vitejs/plugin-vue": "^6.0.0",
-    "@lucide/vue": "^1.0.0",
     "tsup": "^8.5.0",
     "tsx": "^4.20.0",
     "typescript": "^5.8.0",
@@ -69,5 +77,9 @@
     "vue": "^3.5.0",
     "vue-tsc": "^3.0.0"
   },
-  "packageManager": "pnpm@9.12.3"
+  "packageManager": "pnpm@9.12.3",
+  "os": [
+    "darwin",
+    "linux"
+  ]
 }

@@ -8,12 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@tauri-apps/api':
-        specifier: ^2.11.1
-        version: 2.11.1
-      '@tauri-apps/plugin-dialog':
-        specifier: ^2.7.1
-        version: 2.7.1
       commander:
         specifier: ^14.0.0
         version: 14.0.3
@@ -27,9 +21,15 @@ importers:
       '@lucide/vue':
         specifier: ^1.0.0
         version: 1.24.0(vue@3.5.39(typescript@5.9.3))
+      '@tauri-apps/api':
+        specifier: ^2.11.1
+        version: 2.11.1
       '@tauri-apps/cli':
         specifier: ^2.11.4
         version: 2.11.4
+      '@tauri-apps/plugin-dialog':
+        specifier: ^2.7.1
+        version: 2.7.1
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
