@@ -8,7 +8,7 @@ All notable changes to VibeVac are documented here.
 
 - `npx vibevac` prints a short read-only summary: reviewable storage, a breakdown by cache type, the largest workspaces, and next steps. The full table moved to `--details`. Scans show live progress in a terminal.
 - Verified caches for Rust (`target`), Python (`.venv`, `venv`), SwiftPM (`.build`), CocoaPods (`Pods`), Gradle (`.gradle`), and Dart/Flutter (`.dart_tool`), each gated on the owning tool's manifest and marker.
-- Release workflow that publishes the CLI to npm with provenance and updates a Homebrew cask when a GitHub Release is published.
+- Release workflow that publishes the CLI to npm through trusted publishing (OIDC, no stored token) and updates the Homebrew cask in `TargiX/homebrew-tap` when a GitHub Release is published.
 
 ### Changed
 

@@ -81,20 +81,35 @@ remain available for contributors under the MIT license.
 Publishing the GitHub Release (not creating the draft) runs
 `.github/workflows/publish-packages.yml`. It publishes the CLI to npm and
 updates the Homebrew cask, so both only ever point at reviewed, public
-artifacts. Each job skips with a warning when its secret is missing.
+artifacts.
 
 One-time setup:
 
-1. **npm.** Create an npm automation token with publish rights and save it as
-   the `NPM_TOKEN` repository secret. The workflow publishes with provenance,
-   so the package page links back to the exact workflow run. After the first
-   publish you can switch to npm trusted publishing and drop the token.
-2. **Homebrew.** Create a public `TargiX/homebrew-tap` repository. Save a
-   fine-grained token with `Contents: read and write` on that repository as
-   `HOMEBREW_TAP_TOKEN`. The workflow renders
-   `packaging/homebrew/vibevac.rb` with the release version and the DMG
-   checksum from `SHA256SUMS.txt` and pushes it to `Casks/vibevac.rb`. Users
-   then install with `brew install --cask targix/tap/vibevac`.
+1. **npm.** npm requires two-factor authentication to publish, and tokens that
+   bypass 2FA are being retired (reduced in August 2026, unable to publish from
+   January 2027). The workflow therefore uses trusted publishing (OIDC) and
+   stores no npm token.
+   - Enable 2FA on the npm account.
+   - Publish the first version by hand, because trusted publishing cannot
+     create a package: `npm login`, then `npm publish --access public` and
+     enter the one-time code.
+   - On npmjs.com open the `vibevac` package, Settings, Trusted Publisher,
+     choose GitHub Actions, and enter owner `TargiX`, repository `vibevac`,
+     workflow `publish-packages.yml`. The values must match exactly or npm
+     answers with a misleading 404.
+   - Optionally set the package to require 2FA and disallow tokens, so only
+     you and this workflow can publish.
+
+   The job skips a version that is already on npm, so publishing a release
+   for a version you pushed by hand is safe. Trusted publishing also attaches
+   provenance automatically.
+2. **Homebrew.** The public `TargiX/homebrew-tap` repository holds
+   `Casks/vibevac.rb`. Save a fine-grained token with `Contents: read and
+   write` on that repository as the `HOMEBREW_TAP_TOKEN` secret. The workflow
+   renders `packaging/homebrew/vibevac.rb` with the release version and the
+   DMG checksum from `SHA256SUMS.txt` and pushes it to the tap. Without the
+   secret the job skips with a warning and the cask has to be updated by
+   hand. Users install with `brew install --cask targix/tap/vibevac`.
 
 The release tag must equal `v` plus the `package.json` version, or the npm job
 stops before publishing.

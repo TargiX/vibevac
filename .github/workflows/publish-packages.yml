@@ -49,15 +49,23 @@ jobs:
           pnpm typecheck
           pnpm test
 
+      # Trusted publishing (OIDC): npm verifies this exact repository and
+      # workflow file, so no long-lived token is stored. It needs npm 11.5.1+
+      # and a trusted publisher configured on the package page at npmjs.com.
+      # The very first version of a package has to be published by hand.
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest
+
       - name: Publish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::warning::NPM_TOKEN is not set; skipping npm publish"
+          VERSION="${TAG#v}"
+          if npm view "vibevac@${VERSION}" version >/dev/null 2>&1; then
+            echo "::notice::vibevac@${VERSION} is already on npm; nothing to publish"
             exit 0
           fi
-          npm publish --access public --provenance
+          npm publish --access public
 
   homebrew:
     name: Update Homebrew tap
