@@ -979,6 +979,7 @@ async function executeWorktreeRemoval(): Promise<void> {
           force: plan.force,
           reviewedHead: plan.head,
           reviewedWarnings: plan.warnings,
+          reviewedIgnoredFingerprint: plan.ignoredFingerprint,
         });
         worktreeCount += 1;
         reclaimedBytes += result.reclaimedBytes;

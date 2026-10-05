@@ -23,6 +23,7 @@ export interface WorktreeRemovalRequest {
   force?: boolean;
   reviewedHead?: string;
   reviewedWarnings?: string[];
+  reviewedIgnoredFingerprint?: string;
   workspacePath: string;
   minimumInactiveDays: number;
   confirmation?: string;

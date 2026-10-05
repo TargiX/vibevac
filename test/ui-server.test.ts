@@ -89,8 +89,9 @@ describe("local UI server", () => {
     expect(plan.force).toBe(true);
     expect(plan.warnings.join(" ")).toContain("uncommitted");
     expect((await post("remove", { ...request, confirmation: plan.confirmation })).status).toBe(400);
+    expect((await post("remove", { ...request, confirmation: plan.confirmation, reviewedHead: plan.head, reviewedWarnings: plan.warnings })).status).toBe(400);
     await expect(access(worktree)).resolves.toBeUndefined();
-    const result = await post("remove", { ...request, confirmation: plan.confirmation, reviewedHead: plan.head, reviewedWarnings: plan.warnings });
+    const result = await post("remove", { ...request, confirmation: plan.confirmation, reviewedHead: plan.head, reviewedWarnings: plan.warnings, reviewedIgnoredFingerprint: plan.ignoredFingerprint });
     expect(result.status).toBe(200);
     await expect(access(worktree)).rejects.toThrow();
     await expect(access(resolve(fixture.root, "source.ts"))).resolves.toBeUndefined();

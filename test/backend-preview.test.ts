@@ -26,7 +26,7 @@ describe("batch preview isolation", () => {
     const request = { workspacePath: "/idle", minimumInactiveDays: 14, force: true };
     await previewWorktreeRemovals([request]);
     expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body))).toEqual(request);
-    const execution = { ...request, confirmation: "FORCE REMOVE idle", reviewedHead: "abc", reviewedWarnings: ["Local work will be lost."] };
+    const execution = { ...request, confirmation: "FORCE REMOVE idle", reviewedHead: "abc", reviewedWarnings: ["Local work will be lost."], reviewedIgnoredFingerprint: "ignored-files-digest" };
     await removeWorktree(execution);
     expect(JSON.parse(String(vi.mocked(fetch).mock.calls[1]?.[1]?.body))).toEqual(execution);
   });

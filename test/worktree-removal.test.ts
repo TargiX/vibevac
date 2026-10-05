@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -112,7 +112,8 @@ describe("worktree removal", () => {
     await expect(executeWorktreeRemoval({ ...request, confirmation: plan.confirmation.replace("FORCE ", "") }, options)).rejects.toThrow("Confirmation text");
     await expect(access(fixture.worktree)).resolves.toBeUndefined();
     await expect(executeWorktreeRemoval({ ...request, confirmation: plan.confirmation }, options)).rejects.toThrow("not reviewed");
-    await executeWorktreeRemoval({ ...request, confirmation: plan.confirmation, reviewedHead: plan.head, reviewedWarnings: plan.warnings }, options);
+    await expect(executeWorktreeRemoval({ ...request, confirmation: plan.confirmation, reviewedHead: plan.head, reviewedWarnings: plan.warnings }, options)).rejects.toThrow("not reviewed");
+    await executeWorktreeRemoval({ ...request, confirmation: plan.confirmation, reviewedHead: plan.head, reviewedWarnings: plan.warnings, reviewedIgnoredFingerprint: plan.ignoredFingerprint }, options);
     await expect(access(fixture.worktree)).rejects.toThrow();
     expect(await git(fixture.repository, ["rev-parse", "agent/old"])).toBe(head);
     const audit = JSON.parse((await readFile(fixture.auditPath, "utf8")).trim());
@@ -125,7 +126,7 @@ describe("worktree removal", () => {
     const request = { workspacePath: fixture.worktree, minimumInactiveDays: 14, force: true };
     const options = { processSnapshot: inactiveProcesses, now: Date.now(), auditPath: fixture.auditPath };
     const plan = await planWorktreeRemoval(request, options);
-    const approved = { ...request, confirmation: plan.confirmation, reviewedHead: plan.head, reviewedWarnings: plan.warnings };
+    const approved = { ...request, confirmation: plan.confirmation, reviewedHead: plan.head, reviewedWarnings: plan.warnings, reviewedIgnoredFingerprint: plan.ignoredFingerprint };
     await writeFile(resolve(fixture.worktree, "source.ts"), "new changes\n");
     await expect(executeWorktreeRemoval(approved, options)).rejects.toThrow("risks changed");
     await git(fixture.worktree, ["add", "source.ts"]);
@@ -213,5 +214,70 @@ describe("worktree removal", () => {
     await git(fixture.repository, ["worktree", "add", "-b", "agent/nested", nested]);
     await expect(planWorktreeRemoval({ workspacePath: fixture.worktree, minimumInactiveDays: 14, force: true }, { processSnapshot: inactiveProcesses })).rejects.toThrow("nested registered worktree");
     await expect(access(resolve(nested, "source.ts"))).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["repository", "vendor/lib"],
+    ["foreign worktree", "vendor/lib"],
+    ["repository", "node_modules/vendor/lib"],
+    ["foreign worktree", "node_modules/vendor/lib"],
+  ])("protects a nested %s at %s, including one added after preview", async (kind, path) => {
+    const fixture = await fixtureWorktree();
+    const request = { workspacePath: fixture.worktree, minimumInactiveDays: 90, force: true };
+    const options = { processSnapshot: inactiveProcesses, now: fixture.now, auditPath: fixture.auditPath };
+    const plan = await planWorktreeRemoval(request, options);
+    const nested = resolve(fixture.worktree, path);
+    const owner = kind === "repository" ? nested : resolve(fixture.root, "foreign");
+    await execFileAsync("git", ["init", "-b", "main", owner]);
+    await git(owner, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "nested history"]);
+    if (kind !== "repository") await git(owner, ["worktree", "add", "-b", "nested", nested]);
+    const head = await git(nested, ["rev-parse", "HEAD"]);
+    for (const force of [true, false]) {
+      await expect(planWorktreeRemoval({ ...request, force }, options)).rejects.toThrow("nested Git");
+    }
+    await expect(executeWorktreeRemoval({ ...request, confirmation: plan.confirmation,
+      reviewedHead: plan.head, reviewedWarnings: plan.warnings,
+      reviewedIgnoredFingerprint: plan.ignoredFingerprint }, options)).rejects.toThrow("nested Git");
+    expect(await git(nested, ["rev-parse", "HEAD"])).toBe(head);
+    await expect(access(fixture.auditPath)).rejects.toThrow();
+  });
+
+  it.each(["rename", "same-size edit", "ignored directory edit", "leading-space name"])(
+    "requires a fresh review for ignored data even when HEAD and warnings match: %s", async (change) => {
+      const fixture = await fixtureWorktree();
+      await writeFile(resolve(fixture.repository, ".git/info/exclude"), ".private-*\n .private-*\nprivate/\n");
+      for (const name of ["a", "b", "c"]) await writeFile(resolve(fixture.worktree, `.private-${name}`), "old\n");
+      await mkdir(resolve(fixture.worktree, "private"));
+      const fourth = resolve(fixture.worktree, change === "ignored directory edit" ? "private/data" : change === "leading-space name" ? " .private-d" : ".private-d");
+      await writeFile(fourth, "old\n");
+      const request = { workspacePath: fixture.worktree, minimumInactiveDays: 0, force: true };
+      const options = { processSnapshot: inactiveProcesses, now: fixture.now, auditPath: fixture.auditPath };
+      const plan = await planWorktreeRemoval(request, options);
+      if (change === "rename") await rename(fourth, resolve(fixture.worktree, ".private-e"));
+      else await writeFile(fourth, "new\n");
+      const fresh = await planWorktreeRemoval(request, options);
+      expect(fresh.head).toBe(plan.head);
+      expect(fresh.warnings).toEqual(plan.warnings);
+      await expect(executeWorktreeRemoval({ ...request, confirmation: plan.confirmation,
+        reviewedHead: plan.head, reviewedWarnings: plan.warnings,
+        reviewedIgnoredFingerprint: plan.ignoredFingerprint }, options)).rejects.toThrow("risks changed");
+      await expect(access(fixture.worktree)).resolves.toBeUndefined();
+      await expect(access(fixture.auditPath)).rejects.toThrow();
+    },
+  );
+
+  it("does not follow directory symlinks and blocks incomplete traversal", async () => {
+    const fixture = await fixtureWorktree();
+    await symlink(fixture.repository, resolve(fixture.worktree, "external"), "dir");
+    const request = { workspacePath: fixture.worktree, minimumInactiveDays: 0, force: true };
+    const options = { processSnapshot: inactiveProcesses, now: fixture.now };
+    await expect(planWorktreeRemoval(request, options)).resolves.toMatchObject({ force: true });
+    let directory = fixture.worktree;
+    for (let depth = 0; depth < 65; depth += 1) {
+      directory = resolve(directory, "d");
+      await mkdir(directory);
+    }
+    await expect(planWorktreeRemoval(request, options)).rejects.toThrow("inspection limit");
+    await expect(access(resolve(fixture.repository, "source.ts"))).resolves.toBeUndefined();
   });
 });
