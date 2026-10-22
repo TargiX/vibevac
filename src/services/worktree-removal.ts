@@ -16,7 +16,11 @@ import {
   type ActiveProcessSnapshot,
 } from "./active-processes.js";
 import { inventoryRebuildableCaches } from "./cache-inventory.js";
-import { classifyWorkspace } from "./classifier.js";
+import {
+  classifyWorkspace,
+  remoteEvidenceIsFresh,
+  staleRemoteEvidenceReason,
+} from "./classifier.js";
 import { diskUsageBytes } from "./disk-usage.js";
 import { inspectGit } from "./git-inspector.js";
 import { runCommand } from "./run-command.js";
@@ -155,7 +159,8 @@ export async function planWorktreeRemoval(
   }
 
   const workspacePath = await realpath(resolve(request.workspacePath));
-  const git = await inspectGit(workspacePath);
+  const now = options.now ?? Date.now();
+  const git = await inspectGit(workspacePath, { now });
   if (git.kind !== "linked-worktree") {
     throw new Error("Only registered linked Git worktrees can be removed");
   }
@@ -172,7 +177,6 @@ export async function planWorktreeRemoval(
 
   const processes = options.processSnapshot ?? (await inspectActiveProcesses());
   const activeProcessCount = countProcessesWithin(processes, workspacePath);
-  const now = options.now ?? Date.now();
   const classification = classifyWorkspace(git, {
     activeProcessCount,
     staleAfterDays: request.minimumInactiveDays,
@@ -192,6 +196,9 @@ export async function planWorktreeRemoval(
   if (!force && (!upstream || !defaultBranch || !lastActivityAt)) {
     throw new Error("Worktree removal proof is incomplete");
   }
+  if (!force && !remoteEvidenceIsFresh(git)) {
+    throw new Error(`Worktree removal blocked: ${staleRemoteEvidenceReason(git)}`);
+  }
 
   const inactiveDays = lastActivityAt
     ? Math.max(0, Math.floor((now - Date.parse(lastActivityAt)) / DAY_IN_MS))
@@ -203,6 +210,7 @@ export async function planWorktreeRemoval(
   else if (git.ahead > 0) warnings.push(`${git.ahead} unpublished commits remain only in the shared Git repository.`);
   if (!git.remoteContainsHead) warnings.push("Current commit recovery from a remote is unproven.");
   if (git.mergedIntoDefault !== true) warnings.push("Current commit is not proven merged into the default branch.");
+  if (!remoteEvidenceIsFresh(git)) warnings.push(`Remote evidence may be outdated: ${staleRemoteEvidenceReason(git)}.`);
   if (activeProcessCount === null) warnings.push("Active-process inspection is unavailable; running tasks may break.");
   else if (activeProcessCount > 0) warnings.push(`${activeProcessCount} running processes use this worktree and may break. They will not be stopped.`);
   if (request.minimumInactiveDays > 0 && (inactiveDays === null || inactiveDays < request.minimumInactiveDays)) warnings.push(`The worktree does not meet the ${request.minimumInactiveDays}-day inactivity limit.`);

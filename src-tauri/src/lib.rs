@@ -12,9 +12,10 @@ pub use crate::core::conformance::run_conformance_json;
 async fn scan_workspaces(
     stale_after_days: u64,
     custom_roots: Vec<String>,
+    verify_remote: Option<bool>,
 ) -> Result<ScanReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        core::scan_workspaces(stale_after_days, custom_roots)
+        core::scan_workspaces(stale_after_days, custom_roots, verify_remote == Some(true))
     })
     .await
     .map_err(|error| format!("Native scan task failed: {error}"))?

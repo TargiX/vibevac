@@ -23,6 +23,7 @@ interface ScanOptions {
   includeSize?: boolean;
   concurrency?: number;
   staleAfterDays?: number;
+  verifyRemote?: boolean;
   onProgress?: (progress: { completed: number; total: number }) => void;
   // Fixture mode: inject the process snapshot and clock instead of running
   // lsof and reading Date.now(), so a scan is reproducible.
@@ -108,9 +109,10 @@ async function scanCandidate(
   processes: ActiveProcessSnapshot,
   staleAfterDays: number,
   now: number,
+  verifyRemote = false,
 ): Promise<WorkspaceReport> {
   const [gitResult, sizeResult, cacheResult] = await Promise.allSettled([
-    inspectGit(candidate.path),
+    inspectGit(candidate.path, { now, verifyRemote }),
     includeSize ? diskUsageBytes(candidate.path) : Promise.resolve(null),
     includeSize ? inventoryRebuildableCaches(candidate.path) : Promise.resolve([]),
   ]);
@@ -186,6 +188,7 @@ export async function scanWorkspaces(
           processes,
           staleAfterDays,
           now,
+          options.verifyRemote === true,
         ),
       );
       completed += 1;
@@ -256,5 +259,6 @@ export async function scanWorkspacePath(
     options.processSnapshot ?? (await inspectActiveProcesses()),
     options.staleAfterDays ?? 14,
     options.now ?? Date.now(),
+    options.verifyRemote === true,
   );
 }

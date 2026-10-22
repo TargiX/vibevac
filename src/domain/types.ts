@@ -15,6 +15,8 @@ export type DataSafety = "recoverable" | "local-only" | "unknown";
 
 export type Recommendation = "candidate" | "keep" | "review" | "protect";
 
+export type RemoteVerification = "verified" | "mismatch" | "unavailable" | "skipped";
+
 export type CacheKind =
   | "dependencies"
   | "framework-build"
@@ -60,6 +62,9 @@ export interface GitInspection {
   mergedIntoDefault: boolean | null;
   lastCommitAt: string | null;
   lastActivityAt: string | null;
+  remoteFetchedAt: string | null;
+  remoteFetchAgeDays: number | null;
+  remoteVerification: RemoteVerification;
 }
 
 export interface Classification {

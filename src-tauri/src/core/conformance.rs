@@ -47,7 +47,7 @@ pub(super) fn scan_candidate_for_conformance(
         path: path.to_path_buf(),
         source_path: path.to_path_buf(),
     };
-    scan_candidate(&candidate, snapshot, stale_after_days, now_seconds)
+    scan_candidate(&candidate, snapshot, stale_after_days, now_seconds, false)
 }
 
 /// Reads `{workspacePath, workingDirectories, nowIso, staleAfterDays,

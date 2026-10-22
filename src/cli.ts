@@ -22,6 +22,7 @@ interface ScanCommandOptions {
   details: boolean;
   size: boolean;
   staleAfter: number;
+  verifyRemote: boolean;
 }
 
 // Progress goes to stderr and only to a terminal, so piped or JSON output
@@ -81,6 +82,11 @@ program
     positiveInteger,
     14,
   )
+  .option(
+    "--verify-remote",
+    "ask each upstream remote whether its branch still matches (network; 15 s timeout)",
+    false,
+  )
   .action(async (options: ScanCommandOptions) => {
     const roots =
       options.root.length > 0 ? customDiscoveryRoots(options.root) : defaultDiscoveryRoots();
@@ -90,6 +96,7 @@ program
     const report = await scanWorkspaces(roots, {
       includeSize: options.size,
       staleAfterDays: options.staleAfter,
+      verifyRemote: options.verifyRemote,
       onProgress: progress.update,
     }).finally(progress.clear);
 
@@ -115,10 +122,15 @@ program
     positiveInteger,
     14,
   )
+  .option(
+    "--verify-remote",
+    "ask each upstream remote whether its branch still matches (network; 15 s timeout)",
+    false,
+  )
   .action(
     async (
       path: string,
-      options: Pick<ScanCommandOptions, "json" | "size" | "staleAfter">,
+      options: Pick<ScanCommandOptions, "json" | "size" | "staleAfter" | "verifyRemote">,
     ) => {
       const workspacePath = await realpath(resolve(path));
       const report = await scanWorkspaces(
@@ -126,6 +138,7 @@ program
         {
           includeSize: options.size,
           staleAfterDays: options.staleAfter,
+          verifyRemote: options.verifyRemote,
         },
       );
       const workspace = report.workspaces.find((candidate) => candidate.path === workspacePath);

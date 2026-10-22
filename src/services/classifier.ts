@@ -1,6 +1,25 @@
 import type { Classification, GitInspection } from "../domain/types.js";
 
 const DAY_IN_MS = 86_400_000;
+export const REMOTE_FETCH_MAX_AGE_DAYS = 7;
+
+// A passed live check is current evidence; a mismatch or an unreachable remote
+// never upgrades the local fetch age.
+export function remoteEvidenceAgeDays(git: GitInspection): number | null {
+  return git.remoteVerification === "verified" ? 0 : git.remoteFetchAgeDays;
+}
+
+export function remoteEvidenceIsFresh(git: GitInspection): boolean {
+  const ageDays = remoteEvidenceAgeDays(git);
+  return ageDays !== null && ageDays <= REMOTE_FETCH_MAX_AGE_DAYS;
+}
+
+export function staleRemoteEvidenceReason(git: GitInspection): string {
+  const ageDays = remoteEvidenceAgeDays(git);
+  return ageDays === null
+    ? "remote fetch time is unknown; run git fetch to refresh"
+    : `remote state last fetched ${ageDays}d ago; run git fetch to refresh`;
+}
 
 interface ClassificationContext {
   activeProcessCount: number | null;
@@ -123,6 +142,14 @@ export function classifyWorkspace(
       dataSafety: "recoverable",
       recommendation: "review",
       reasons: ["last workspace activity is unknown"],
+    };
+  }
+
+  if (!remoteEvidenceIsFresh(git)) {
+    return {
+      dataSafety: "recoverable",
+      recommendation: "review",
+      reasons: [staleRemoteEvidenceReason(git)],
     };
   }
 

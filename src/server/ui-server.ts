@@ -220,7 +220,10 @@ export async function startUiServer(
               ...roots,
               ...customDiscoveryRoots(requestUrl.searchParams.getAll("root")),
             ],
-            { staleAfterDays },
+            {
+              staleAfterDays,
+              verifyRemote: requestUrl.searchParams.get("verifyRemote") === "true",
+            },
           ),
         );
         return;

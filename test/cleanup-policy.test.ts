@@ -37,6 +37,9 @@ function workspace(
       lastCommitAt: null,
       lastActivityAt:
         daysAgo === null ? null : new Date(NOW - daysAgo * 86_400_000).toISOString(),
+      remoteFetchedAt: new Date(NOW).toISOString(),
+      remoteFetchAgeDays: 0,
+      remoteVerification: "skipped",
     },
   };
 }
