@@ -124,6 +124,11 @@ async function git(root: string, step: Extract<FixtureStep, { git: string[] }>, 
       env: {
         ...process.env,
         ...ISOLATED_GIT_ENV,
+        // `git commit` otherwise detaches `git maintenance run --auto`, which
+        // can repack refs after pinRemoteEvidence has pinned their mtimes.
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "maintenance.auto",
+        GIT_CONFIG_VALUE_0: "false",
         GIT_AUTHOR_NAME: "VibeVac Conformance",
         GIT_AUTHOR_EMAIL: "conformance@vibevac.test",
         GIT_AUTHOR_DATE: date,
