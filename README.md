@@ -183,6 +183,10 @@ vibevac inspect ~/Projects/my-app        # the evidence behind one workspace
 vibevac --json > vibevac-report.json     # machine-readable report
 ```
 
+The JSON report and the audit log are versioned contracts: see
+[docs/json-schema](docs/json-schema) and the
+[audit record format](docs/safety-model.md#audit-record-format).
+
 `vibevac clean` previews by default. Run it once, then repeat with the
 confirmation it prints:
 

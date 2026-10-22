@@ -52,6 +52,9 @@ function scanReport(workspaces: WorkspaceReport[], processCheckAvailable = true)
   const sum = (pick: (item: WorkspaceReport) => number) =>
     workspaces.reduce((total, item) => total + pick(item), 0);
   return {
+    schemaVersion: 2,
+    engine: "node",
+    engineVersion: "0.0.0-test",
     generatedAt: "2026-07-13T12:00:00.000Z",
     roots: [],
     workspaces,
@@ -81,6 +84,9 @@ describe("report formatting", () => {
 
   it("does not claim zero usage when size calculation was skipped", () => {
     const output = renderHumanReport({
+      schemaVersion: 2,
+      engine: "node",
+      engineVersion: "0.0.0-test",
       generatedAt: "2026-07-13T12:00:00.000Z",
       roots: [],
       workspaces: [

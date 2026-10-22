@@ -6,6 +6,7 @@ import type {
   WorkspaceReport,
 } from "../domain/types.js";
 import { isAbsolute, relative, sep } from "node:path";
+import { CONTRACT_HEADER } from "../engine.js";
 import {
   countProcessesWithin,
   inspectActiveProcesses,
@@ -206,6 +207,7 @@ export async function scanWorkspaces(
   });
 
   return {
+    ...CONTRACT_HEADER,
     generatedAt: new Date().toISOString(),
     roots,
     workspaces,

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { worktreePlanId } from "../src/engine.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ActiveProcessSnapshot } from "../src/services/active-processes.js";
@@ -119,6 +120,7 @@ describe("worktree removal", () => {
     const audit = JSON.parse((await readFile(fixture.auditPath, "utf8")).trim());
     expect(audit.force).toBe(true);
     expect(audit.warnings).toEqual(plan.warnings);
+    expect(audit).toMatchObject({ version: 2, engine: "node", planId: worktreePlanId(plan.workspacePath, plan.head) });
   });
 
   it("requires a new force review when risks or HEAD change before execution", async () => {

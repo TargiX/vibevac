@@ -46,6 +46,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check generated JSON Schema
+        run: |
+          pnpm schema
+          git diff --exit-code docs/json-schema
+          test -z "$(git status --porcelain docs/json-schema)"
+
       - name: Validate TypeScript and Vue
         run: pnpm typecheck
 

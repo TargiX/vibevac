@@ -4,7 +4,9 @@ import { appendFile, lstat, mkdir, readdir, readlink, realpath } from "node:fs/p
 import { homedir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 
+import { AUDIT_HEADER, CONTRACT_HEADER, worktreePlanId } from "../engine.js";
 import type {
+  AuditRecord,
   WorktreeRemovalPlan,
   WorktreeRemovalResult,
 } from "../domain/types.js";
@@ -239,6 +241,7 @@ export async function planWorktreeRemoval(
   )} worktree add ${shellQuote(workspacePath)} ${shellQuote(branch)}`;
 
   return {
+    ...CONTRACT_HEADER,
     force,
     warnings: force ? warnings : [],
     ignoredFingerprint: await ignoredFingerprint(workspacePath, unknownIgnored),
@@ -273,6 +276,7 @@ export async function executeWorktreeRemoval(
   const auditPath = options.auditPath ?? resolve(homedir(), ".vibevac/audit.jsonl");
   await mkdir(dirname(auditPath), { recursive: true });
   const completedAt = new Date().toISOString();
+  const planId = worktreePlanId(plan.workspacePath, plan.head);
 
   try {
     await runCommand(
@@ -290,7 +294,8 @@ export async function executeWorktreeRemoval(
     await appendFile(
       auditPath,
       `${JSON.stringify({
-        version: 1,
+        ...AUDIT_HEADER,
+        planId,
         action: "worktree-removal-failed",
         completedAt: new Date().toISOString(),
         workspacePath: plan.workspacePath,
@@ -298,7 +303,7 @@ export async function executeWorktreeRemoval(
         force: plan.force,
         warnings: plan.warnings,
         error: error instanceof Error ? error.message : String(error),
-      })}\n`,
+      } satisfies AuditRecord)}\n`,
       "utf8",
     );
     throw error;
@@ -307,7 +312,8 @@ export async function executeWorktreeRemoval(
   await appendFile(
     auditPath,
     `${JSON.stringify({
-      version: 1,
+      ...AUDIT_HEADER,
+      planId,
       action: "worktree-removal",
       completedAt,
       workspacePath: plan.workspacePath,
@@ -318,11 +324,12 @@ export async function executeWorktreeRemoval(
       head: plan.head,
       upstream: plan.upstream,
       reconstructionCommand: plan.reconstructionCommand,
-    })}\n`,
+    } satisfies AuditRecord)}\n`,
     "utf8",
   );
 
   return {
+    ...CONTRACT_HEADER,
     workspacePath: plan.workspacePath,
     reclaimedBytes: plan.sizeBytes,
     preservedBranch: plan.branch,

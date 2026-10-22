@@ -2,7 +2,9 @@ import { appendFile, lstat, mkdir, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve, sep } from "node:path";
 
+import { AUDIT_HEADER, CONTRACT_HEADER, cachePlanId } from "../engine.js";
 import type {
+  AuditRecord,
   CacheCleanupPlan,
   CacheCleanupResult,
   CacheEntry,
@@ -87,6 +89,7 @@ export async function planCacheCleanup(
   );
 
   return {
+    ...CONTRACT_HEADER,
     workspacePath: resolvedWorkspacePath,
     caches,
     reclaimBytes: caches.reduce(
@@ -108,6 +111,10 @@ export async function executeCacheCleanup(
   const auditPath = options.auditPath ?? resolve(homedir(), ".vibevac/audit.jsonl");
   await mkdir(dirname(auditPath), { recursive: true });
   await appendFile(auditPath, "", "utf8");
+  const planId = cachePlanId(
+    plan.workspacePath,
+    plan.caches.map((cache) => cache.relativePath),
+  );
 
   try {
     for (const cache of plan.caches) {
@@ -122,13 +129,14 @@ export async function executeCacheCleanup(
     await appendFile(
       auditPath,
       `${JSON.stringify({
-        version: 1,
+        ...AUDIT_HEADER,
+        planId,
         action: "cache-cleanup-partial",
         completedAt: new Date().toISOString(),
         workspacePath: plan.workspacePath,
         removed,
         error: error instanceof Error ? error.message : String(error),
-      })}\n`,
+      } satisfies AuditRecord)}\n`,
       "utf8",
     );
     throw error;
@@ -137,17 +145,19 @@ export async function executeCacheCleanup(
   await appendFile(
     auditPath,
     `${JSON.stringify({
-      version: 1,
+      ...AUDIT_HEADER,
+      planId,
       action: "cache-cleanup",
       completedAt,
       workspacePath: plan.workspacePath,
       removed,
       reclaimedBytes: plan.reclaimBytes,
-    })}\n`,
+    } satisfies AuditRecord)}\n`,
     "utf8",
   );
 
   return {
+    ...CONTRACT_HEADER,
     workspacePath: plan.workspacePath,
     removed,
     reclaimedBytes: plan.reclaimBytes,

@@ -2,7 +2,7 @@
 
 import { Command, Option } from "commander";
 import { realpath } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { ENGINE_VERSION } from "./engine.js";
 import { resolve } from "node:path";
 
 import { customDiscoveryRoots, defaultDiscoveryRoots } from "./services/discovery.js";
@@ -56,16 +56,13 @@ function portNumber(value: string): number {
   return parsed;
 }
 
-// Read at runtime so the CLI version cannot drift from package.json. The path
-// is the same from src/ under tsx and from dist/ in the published package.
-const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
 const program = new Command();
 
 program
   .name("vibevac")
   .description("Safely find disk space trapped in AI coding workspaces")
-  .version(version);
+  .version(ENGINE_VERSION);
 
 program
   .command("scan", { isDefault: true })
