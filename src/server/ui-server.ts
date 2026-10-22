@@ -39,6 +39,7 @@ interface CleanupBody {
   force?: unknown;
   reviewedHead?: unknown;
   reviewedWarnings?: unknown;
+  reviewedIgnoredFingerprint?: unknown;
   workspacePath?: unknown;
   relativePaths?: unknown;
   confirmation?: unknown;
@@ -219,7 +220,10 @@ export async function startUiServer(
               ...roots,
               ...customDiscoveryRoots(requestUrl.searchParams.getAll("root")),
             ],
-            { staleAfterDays },
+            {
+              staleAfterDays,
+              verifyRemote: requestUrl.searchParams.get("verifyRemote") === "true",
+            },
           ),
         );
         return;
@@ -309,6 +313,7 @@ export async function startUiServer(
               confirmation: body.confirmation,
               reviewedHead: typeof body.reviewedHead === "string" ? body.reviewedHead : undefined,
               reviewedWarnings: Array.isArray(body.reviewedWarnings) && body.reviewedWarnings.every((item) => typeof item === "string") ? body.reviewedWarnings : undefined,
+              reviewedIgnoredFingerprint: typeof body.reviewedIgnoredFingerprint === "string" ? body.reviewedIgnoredFingerprint : undefined,
             },
             { auditPath: options.auditPath },
           ),

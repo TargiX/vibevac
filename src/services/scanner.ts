@@ -1,10 +1,12 @@
 import type {
+  CommandTimeout,
   DiscoveryRoot,
   ScanReport,
   WorkspaceCandidate,
   WorkspaceReport,
 } from "../domain/types.js";
 import { isAbsolute, relative, sep } from "node:path";
+import { CONTRACT_HEADER } from "../engine.js";
 import {
   countProcessesWithin,
   inspectActiveProcesses,
@@ -15,11 +17,18 @@ import { inventoryRebuildableCaches } from "./cache-inventory.js";
 import { discoverWorkspaces } from "./discovery.js";
 import { diskUsageBytes } from "./disk-usage.js";
 import { inspectGit } from "./git-inspector.js";
+import { collectTimeouts } from "./run-command.js";
 
 interface ScanOptions {
   includeSize?: boolean;
   concurrency?: number;
   staleAfterDays?: number;
+  verifyRemote?: boolean;
+  onProgress?: (progress: { completed: number; total: number }) => void;
+  // Fixture mode: inject the process snapshot and clock instead of running
+  // lsof and reading Date.now(), so a scan is reproducible.
+  processSnapshot?: ActiveProcessSnapshot;
+  now?: number;
 }
 
 function errorMessage(error: unknown): string {
@@ -100,9 +109,10 @@ async function scanCandidate(
   processes: ActiveProcessSnapshot,
   staleAfterDays: number,
   now: number,
+  verifyRemote = false,
 ): Promise<WorkspaceReport> {
   const [gitResult, sizeResult, cacheResult] = await Promise.allSettled([
-    inspectGit(candidate.path),
+    inspectGit(candidate.path, { now, verifyRemote }),
     includeSize ? diskUsageBytes(candidate.path) : Promise.resolve(null),
     includeSize ? inventoryRebuildableCaches(candidate.path) : Promise.resolve([]),
   ]);
@@ -158,23 +168,33 @@ export async function scanWorkspaces(
   roots: DiscoveryRoot[],
   options: ScanOptions = {},
 ): Promise<ScanReport> {
-  const now = Date.now();
+  const now = options.now ?? Date.now();
   const staleAfterDays = options.staleAfterDays ?? 14;
+  const timeouts: CommandTimeout[] = [];
   const [candidates, processes] = await Promise.all([
-    discoverWorkspaces(roots),
-    inspectActiveProcesses(),
+    collectTimeouts(timeouts, null, () => discoverWorkspaces(roots)),
+    options.processSnapshot ?? inspectActiveProcesses(),
   ]);
+  let completed = 0;
+  options.onProgress?.({ completed, total: candidates.length });
   const scannedWorkspaces = await mapConcurrent(
     candidates,
     options.concurrency ?? 4,
-    (candidate) =>
-      scanCandidate(
-        candidate,
-        options.includeSize ?? true,
-        processes,
-        staleAfterDays,
-        now,
-      ),
+    async (candidate) => {
+      const workspace = await collectTimeouts(timeouts, candidate.path, () =>
+        scanCandidate(
+          candidate,
+          options.includeSize ?? true,
+          processes,
+          staleAfterDays,
+          now,
+          options.verifyRemote === true,
+        ),
+      );
+      completed += 1;
+      options.onProgress?.({ completed, total: candidates.length });
+      return workspace;
+    },
   );
   const workspaces = excludeNestedWorkspaceSizes(scannedWorkspaces);
 
@@ -194,6 +214,7 @@ export async function scanWorkspaces(
   });
 
   return {
+    ...CONTRACT_HEADER,
     generatedAt: new Date().toISOString(),
     roots,
     workspaces,
@@ -222,5 +243,24 @@ export async function scanWorkspaces(
     staleAfterDays,
     processCheckAvailable: processes.available,
     processCheckError: processes.error,
+    timeouts,
+    processCheckMethod: processes.method,
+    processCheckCoverage: processes.coverage,
   };
+}
+
+// Scans one known workspace path without discovery. The conformance suite
+// uses it to compare this engine with src-tauri/src/core.rs on the same fixture.
+export async function scanWorkspacePath(
+  workspacePath: string,
+  options: ScanOptions = {},
+): Promise<WorkspaceReport> {
+  return scanCandidate(
+    { tool: "custom", path: workspacePath, sourcePath: workspacePath },
+    options.includeSize ?? true,
+    options.processSnapshot ?? (await inspectActiveProcesses()),
+    options.staleAfterDays ?? 14,
+    options.now ?? Date.now(),
+    options.verifyRemote === true,
+  );
 }

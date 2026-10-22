@@ -18,6 +18,9 @@ function gitInspection(overrides: Partial<GitInspection> = {}): GitInspection {
     mergedIntoDefault: true,
     lastCommitAt: "2026-07-13T00:00:00.000Z",
     lastActivityAt: "2026-06-01T00:00:00.000Z",
+    remoteFetchedAt: "2026-07-12T00:00:00.000Z",
+    remoteFetchAgeDays: 1,
+    remoteVerification: "skipped",
     ...overrides,
   };
 }
@@ -121,5 +124,79 @@ describe("classifyWorkspace", () => {
     );
 
     expect(result.recommendation).toBe("keep");
+  });
+
+  it("requires review instead of candidate when the remote was fetched over 7 days ago", () => {
+    const result = classifyWorkspace(
+      gitInspection({ remoteFetchedAt: "2026-06-20T00:00:00.000Z", remoteFetchAgeDays: 23 }),
+      { activeProcessCount: 0, now },
+    );
+
+    expect(result.dataSafety).toBe("recoverable");
+    expect(result.recommendation).toBe("review");
+    expect(result.reasons).toEqual([
+      "remote state last fetched 23d ago; run git fetch to refresh",
+    ]);
+  });
+
+  it("accepts remote evidence that is exactly 7 days old", () => {
+    const result = classifyWorkspace(gitInspection({ remoteFetchAgeDays: 7 }), {
+      activeProcessCount: 0,
+      now,
+    });
+
+    expect(result.recommendation).toBe("candidate");
+  });
+
+  it("requires review when the remote fetch time is unknown", () => {
+    const result = classifyWorkspace(
+      gitInspection({ remoteFetchedAt: null, remoteFetchAgeDays: null }),
+      { activeProcessCount: 0, now },
+    );
+
+    expect(result.recommendation).toBe("review");
+    expect(result.reasons).toEqual([
+      "remote fetch time is unknown; run git fetch to refresh",
+    ]);
+  });
+
+  it("lets a verified live check stand in for a stale fetch, but not a mismatch", () => {
+    const stale = { remoteFetchedAt: null, remoteFetchAgeDays: null };
+
+    expect(
+      classifyWorkspace(gitInspection({ ...stale, remoteVerification: "verified" }), {
+        activeProcessCount: 0,
+        now,
+      }).recommendation,
+    ).toBe("candidate");
+    for (const remoteVerification of ["mismatch", "unavailable"] as const) {
+      expect(
+        classifyWorkspace(gitInspection({ ...stale, remoteVerification }), {
+          activeProcessCount: 0,
+          now,
+        }).recommendation,
+      ).toBe("review");
+    }
+  });
+
+  it("keeps earlier protect and keep reasons ahead of stale remote evidence", () => {
+    const stale = { remoteFetchAgeDays: 90 };
+
+    expect(
+      classifyWorkspace(gitInspection({ ...stale, ahead: 1 }), { activeProcessCount: 0, now })
+        .recommendation,
+    ).toBe("protect");
+    expect(
+      classifyWorkspace(
+        gitInspection({ ...stale, lastActivityAt: "2026-07-12T00:00:00.000Z" }),
+        { activeProcessCount: 0, now },
+      ).recommendation,
+    ).toBe("keep");
+    expect(
+      classifyWorkspace(gitInspection({ ...stale, mergedIntoDefault: false }), {
+        activeProcessCount: 0,
+        now,
+      }).reasons[0],
+    ).toContain("not merged");
   });
 });

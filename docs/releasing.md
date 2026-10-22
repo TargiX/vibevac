@@ -43,7 +43,11 @@ Before publishing a DMG:
 3. sign the app with an Apple Developer ID Application certificate;
 4. notarize the signed bundle with Apple and staple the ticket;
 5. verify with `codesign --verify --deep --strict`, `spctl --assess`, and
-   `stapler validate`;
+   `stapler validate`; the release workflow also launches the notarized app
+   with `VIBEVAC_SMOKE=1`, which scans the fixture from
+   `scripts/create-smoke-fixture.sh` (`VIBEVAC_SMOKE_ROOT`), writes the report
+   to `VIBEVAC_SMOKE_OUT` and quits without a window; the report must validate
+   against `docs/json-schema/scan-report.json`;
 6. install the DMG on a clean macOS user account and complete a read-only scan;
 7. attach the DMG to a GitHub Release and publish checksums.
 
@@ -75,6 +79,29 @@ The first public release should contain:
 
 Do not advertise an unsigned DMG as the normal installation path. Source builds
 remain available for contributors under the MIT license.
+
+## npm and Homebrew
+
+Publishing the GitHub Release (not creating the draft) runs
+`.github/workflows/publish-packages.yml`. It publishes the CLI to npm and
+updates the Homebrew cask, so both only ever point at reviewed, public
+artifacts. Each job skips with a warning when its secret is missing.
+
+One-time setup:
+
+1. **npm.** Create an npm automation token with publish rights and save it as
+   the `NPM_TOKEN` repository secret. The workflow publishes with provenance,
+   so the package page links back to the exact workflow run. After the first
+   publish you can switch to npm trusted publishing and drop the token.
+2. **Homebrew.** Create a public `TargiX/homebrew-tap` repository. Save a
+   fine-grained token with `Contents: read and write` on that repository as
+   `HOMEBREW_TAP_TOKEN`. The workflow renders
+   `packaging/homebrew/vibevac.rb` with the release version and the DMG
+   checksum from `SHA256SUMS.txt` and pushes it to `Casks/vibevac.rb`. Users
+   then install with `brew install --cask targix/tap/vibevac`.
+
+The release tag must equal `v` plus the `package.json` version, or the npm job
+stops before publishing.
 
 ## Primary references
 

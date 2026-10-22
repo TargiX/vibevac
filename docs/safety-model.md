@@ -27,6 +27,8 @@ Every condition must be true:
 - the path is a linked Git worktree;
 - `HEAD` is attached to a branch;
 - local remote-tracking refs prove `HEAD` is merged into the default branch;
+- those refs were refreshed from the remote within the last 7 days, or an
+  explicit `--verify-remote` check confirmed the upstream branch;
 - the latest worktree/index activity signal is at least 14 days old by default;
 - `lsof` found no running process whose current working directory is inside
   the workspace.
@@ -43,7 +45,10 @@ Recent activity takes precedence over detached or unmerged state.
 
 The data is recoverable and stale, but VibeVac cannot prove one of the intent
 signals: branch attachment, merge into the default branch, activity timestamp,
-or active-process availability.
+or active-process availability. A workspace that passes every other check is
+also `REVIEW` when its remote evidence is more than 7 days old or its age is
+unknown, with the reason `remote state last fetched 23d ago; run git fetch to
+refresh`.
 
 #### `PROTECT`
 
@@ -56,10 +61,43 @@ inspection failed. A removal command must refuse to touch it.
   read-only scan does not refresh the index.
 - Merge state comes from existing local remote-tracking refs. VibeVac does not
   contact GitHub or run `git fetch` during the default scan.
+- Remote freshness is the age of those refs: the modification time of
+  `FETCH_HEAD` in the common Git directory or the worktree's own Git directory,
+  whichever is newer. Without one, the newest file under
+  `refs/remotes/<remote>/` or the `packed-refs` file (when it holds that
+  remote's refs) stands in. The remote is the upstream's, else `origin`; with
+  no such remote the age is unknown. A branch deleted or force-pushed on the
+  server can still look recoverable in refs that are months old, so evidence
+  older than 7 days, or of unknown age, never produces a `CANDIDATE`.
+  `vibevac scan --details` and `vibevac inspect` print the fetch age.
+- `--verify-remote` (CLI `scan` and `inspect`; `verifyRemote` for the dashboard
+  and native scan) is off by default and is the only network call VibeVac
+  makes. It runs `git ls-remote --exit-code --heads <remote> <branch>` for the
+  upstream branch with a 15-second timeout and compares the answer with the
+  local tracking ref. `verified` counts as fresh evidence. `mismatch` (the
+  branch moved or no longer exists on the remote) and `unavailable` (failure or
+  timeout) never upgrade anything; the local fetch age still decides. Without
+  an upstream the check is `skipped`.
 - Activity is the newest signal among the worktree directory, worktree Git
   index, and latest commit. It is evidence, not proof of human intent.
-- Process detection uses `lsof` and can only observe processes visible to the
-  current user. If it is unavailable, VibeVac produces no cleanup candidates.
+- Process detection reads the working directory of every running process the
+  current user may inspect. The desktop engine asks the kernel directly
+  (`libproc` on macOS, `/proc/<pid>/cwd` on Linux); the CLI reads `/proc` on
+  Linux and runs `lsof` on macOS. `lsof` is also the fallback when the native
+  call reads nothing, and it is stopped after 5 seconds. The scan reports the
+  method used and its coverage, for example "libproc, current user only".
+- Coverage is the current user's processes unless VibeVac runs as root. Another
+  account's build, editor or agent working in a shared checkout is not seen,
+  and a process that only holds files open without its working directory inside
+  the workspace is not seen by this check. If no method works, VibeVac produces
+  no cleanup candidates.
+- In the desktop engine, whole-worktree removal adds an open-file check while
+  the removal is planned and again right before it runs, never during a scan.
+  It counts open file descriptors, including directories, under the worktree
+  across the same processes; VibeVac's own handles are ignored. Any open file blocks removal,
+  with or without the explicit override. The check is limited to 2 seconds;
+  running out of time blocks a normal removal and becomes a reviewed warning
+  under the override. Cache cleanup does not run this check.
 - An IDE can keep a project conceptually open without using a process cwd inside
   it. This is why every candidate still requires a human decision.
 
@@ -128,6 +166,23 @@ large/deep contents; it never accepts a partly inspected build directory.
 
 `node_modules` also requires a recognized lockfile at the repository root.
 
+Ecosystem caches whose names are also ordinary words must prove which tool
+owns them before any other check runs:
+
+| Directory | Required proof |
+| --- | --- |
+| `target` | `Cargo.toml` beside it and Cargo's `CACHEDIR.TAG` or `.rustc_info.json` inside it |
+| `.venv`, `venv` | `pyvenv.cfg` inside it and a Python manifest beside it (`pyproject.toml`, `uv.lock`, `poetry.lock`, `Pipfile`, `Pipfile.lock`, `setup.py`, `setup.cfg`, or `requirements*.txt`) |
+| `.build` | `Package.swift` beside it |
+| `Pods` | `Manifest.lock` inside it and `Podfile.lock` beside it |
+| `.gradle` | `settings.gradle(.kts)` or `build.gradle(.kts)` beside it |
+| `.dart_tool` | `pubspec.yaml` beside it |
+
+Every proof file must be a regular file, not a symlink. A directory that fails
+its proof is neither offered nor traversed. Because the manifest identifies the
+owning tool, these outputs skip the broad build-output artifact scan; for
+example, dSYMs that Cargo writes under `target` are rebuildable.
+
 The desktop cleanup slider can prepare four increasingly broad plans: caches
 inactive for at least 90 days, 30 days, 14 days, or every verified cache. An
 unknown activity timestamp is included only in the explicit `Full cache`
@@ -141,6 +196,31 @@ process has a current working directory inside the workspace.
 Every completed or partial operation is appended to
 `~/.vibevac/audit.jsonl`. Cache cleanup preserves the workspace, source,
 branch, and Git history.
+
+### Audit record format
+
+Each line of `~/.vibevac/audit.jsonl` is one JSON object, described by
+[`docs/json-schema/audit-record.json`](json-schema/audit-record.json).
+Records written since 0.3 carry `version: 2`; earlier lines carry
+`version: 1` and lack the fields below.
+
+| Field | Meaning |
+| --- | --- |
+| `version` | Audit record format, currently `2` |
+| `engine`, `engineVersion` | `node` (CLI and `vibevac ui`) or `native` (desktop app), and its release version |
+| `planId` | First 16 hex characters of SHA-256 over the revalidated plan identity |
+| `action` | `cache-cleanup`, `cache-cleanup-partial`, `worktree-removal`, or `worktree-removal-failed` |
+| `completedAt`, `workspacePath` | When it happened and the canonical workspace path |
+
+`planId` lets a partial or failed record be matched to the plan it executed.
+Both engines hash the same compact JSON: `{"workspacePath":…,"relativePaths":[…]}`
+with cache paths sorted bytewise for cache cleanup, and
+`{"workspacePath":…,"head":…}` for worktree removal.
+
+The scan report (`vibevac --json`) and the cleanup and removal plans carry
+`schemaVersion: 2`, `engine`, and `engineVersion`; their schemas sit beside the
+audit schema in [`docs/json-schema/`](json-schema/). Regenerate them with
+`pnpm schema` after changing `src/domain/types.ts`; CI fails when they differ.
 
 The CLI `clean` command defaults to a preview. It requires an explicit exact
 workspace and either selected `--cache` paths or `--all` for that workspace.
@@ -166,15 +246,17 @@ By default, a removal plan must prove all of the following:
    repository or ordinary project folder;
 2. the checkout is clean, attached to a branch, synced to an upstream, and its
    `HEAD` is merged into the locally known default branch;
-3. activity meets the selected threshold and no visible process has a current
+3. that remote evidence was fetched within the last 7 days; stale or unknown
+   fetch evidence refuses the plan with `run git fetch to refresh`;
+4. activity meets the selected threshold and no visible process has a current
    working directory inside the checkout;
-4. every ignored, untracked entry is either contained by a freshly verified
+5. every ignored, untracked entry is either contained by a freshly verified
    rebuildable-cache path or matches the narrow generated-file allowlist
    (`next-env.d.ts`, `*.tsbuildinfo`, `.eslintcache`, `.stylelintcache`); any
    other ignored data blocks the plan;
-5. the common Git directory resolves outside the removal target, so branch,
+6. the common Git directory resolves outside the removal target, so branch,
    refs, objects, and history cannot be removed with the checkout;
-6. the UI shows the exact worktrees, branches, ages, and bytes, then requires a
+7. the UI shows the exact worktrees, branches, ages, and bytes, then requires a
    separate typed batch confirmation.
 
 Execution repeats the complete proof for each selected worktree. It invokes
@@ -214,9 +296,17 @@ other rows are not added. Changing the time filter clears the selection. Cache c
 Both native and web backends default `force` to false and require an explicit
 boolean opt-in. An override preview reports all observable risks, including
 uncommitted entries, unpublished commits, ignored paths outside verified
-caches, and running processes. The exact canonical paths appear in review;
+caches, running processes, and remote evidence older than 7 days or of unknown
+age. The exact canonical paths appear in review;
 typed confirmation includes `FORCE REMOVE` and the identities of every target.
-Execution requires the reviewed HEAD and warnings to match a fresh preview.
+Nested `.git` entries (files, directories, or symlinks) block removal even with
+override. The check does not follow symlinks and fails closed on read errors
+or traversal limits (200,000 entries or 64 directory levels).
+
+Execution requires the reviewed HEAD, warnings, and a SHA-256 fingerprint of all
+unknown ignored file paths, types, and contents to match a fresh preview. Ignored
+directories are enumerated fully; symlinks bind their link target without reading
+external data. Verified rebuildable caches and known generated files are excluded.
 Changed risks require a new review. Audit entries record the override and risks.
 
 Structural checks still require a registered, attached linked worktree with its

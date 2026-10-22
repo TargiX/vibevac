@@ -2,6 +2,21 @@
 
 All notable changes to VibeVac are documented here.
 
+## [0.2.0] - Unreleased
+
+### Added
+
+- `npx vibevac` prints a short read-only summary: reviewable storage, a breakdown by cache type, the largest workspaces, and next steps. The full table moved to `--details`. Scans show live progress in a terminal.
+- Verified caches for Rust (`target`), Python (`.venv`, `venv`), SwiftPM (`.build`), CocoaPods (`Pods`), Gradle (`.gradle`), and Dart/Flutter (`.dart_tool`), each gated on the owning tool's manifest and marker.
+- Release workflow that publishes the CLI to npm with provenance and updates a Homebrew cask when a GitHub Release is published.
+
+### Changed
+
+- Redesigned control center: one hero figure, a level rail, a compact sticky summary while scrolling, and hairline layout instead of boxed panels.
+- The npm package no longer ships `docs/` or desktop-only Tauri dependencies.
+- The CLI reads its version from `package.json` instead of a hardcoded string.
+- README rewritten around the one-command scan, install paths, and a table of every reclaimable directory with the proof it requires.
+
 ## [0.1.0] - 2026-07-14
 
 ### Added
@@ -22,4 +37,5 @@ All notable changes to VibeVac are documented here.
 - VibeVac does not fetch remotes; merge and recovery evidence use the locally available remote-tracking refs.
 - Process detection depends on `lsof` visibility for the current user.
 
+[0.2.0]: https://github.com/TargiX/vibevac/releases/tag/v0.2.0
 [0.1.0]: https://github.com/TargiX/vibevac/releases/tag/v0.1.0

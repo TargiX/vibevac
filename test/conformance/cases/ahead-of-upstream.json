@@ -1,0 +1,47 @@
+{
+  "name": "commit ahead of upstream",
+  "description": "A local commit that was never pushed is the only copy of that work.",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "write": {
+        "agent-worktree/feature.ts": "export const feature = 1;\n"
+      }
+    },
+    {
+      "git": [
+        "add",
+        "feature.ts"
+      ],
+      "cwd": "agent-worktree"
+    },
+    {
+      "git": [
+        "commit",
+        "-q",
+        "-m",
+        "Unpushed work"
+      ],
+      "cwd": "agent-worktree"
+    }
+  ],
+  "workspace": "agent-worktree",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "expected": {
+    "recommendation": "protect",
+    "dataSafety": "local-only",
+    "reasons": [
+      "1 commit ahead of upstream"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": false
+    },
+    "cacheCleanupAllowed": false,
+    "cacheCleanupReason": "no verified rebuildable caches found",
+    "caches": []
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "dirty worktree",
+  "description": "An untracked file is local-only work, so the worktree is protected regardless of merge state. Ignored caches stay cleanable.",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "write": {
+        "agent-worktree/node_modules/pkg/index.js": "module.exports = 1;\n",
+        "agent-worktree/notes.md": "unsaved idea\n"
+      }
+    }
+  ],
+  "workspace": "agent-worktree",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "expected": {
+    "recommendation": "protect",
+    "dataSafety": "local-only",
+    "reasons": [
+      "1 uncommitted entries, including 1 untracked"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 1,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": true,
+    "cacheCleanupReason": null,
+    "caches": [
+      "node_modules"
+    ]
+  }
+}

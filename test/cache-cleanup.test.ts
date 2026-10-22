@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { cachePlanId } from "../src/engine.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ActiveProcessSnapshot } from "../src/services/active-processes.js";
@@ -19,6 +20,8 @@ const noActiveProcesses: ActiveProcessSnapshot = {
   available: true,
   workingDirectories: new Map(),
   error: null,
+  method: "lsof",
+  coverage: "current-user",
 };
 
 afterEach(async () => {
@@ -49,7 +52,7 @@ describe("cache cleanup", () => {
     const alias = resolve(root, "alias");
     await symlink(root, alias);
     await expect(planCacheCleanup(alias, ["node_modules"], {
-      processSnapshot: {available:true,workingDirectories:new Map([[root,1]]),error:null},
+      processSnapshot: {available:true,workingDirectories:new Map([[root,1]]),error:null,method:"lsof",coverage:"current-user"},
     })).rejects.toThrow("running process");
     await expect(access(resolve(root,"node_modules"))).resolves.toBeUndefined();
   });
@@ -88,6 +91,15 @@ describe("cache cleanup", () => {
     );
     expect(result.removed).toHaveLength(1);
     expect(await readFile(auditPath, "utf8")).toContain('"action":"cache-cleanup"');
+    expect(plan).toMatchObject({ schemaVersion: 2, engine: "node" });
+    expect(result).toMatchObject({ schemaVersion: 2, engine: "node" });
+    const audit = JSON.parse((await readFile(auditPath, "utf8")).trim());
+    expect(audit).toMatchObject({
+      version: 2,
+      engine: "node",
+      engineVersion: plan.engineVersion,
+      planId: cachePlanId(plan.workspacePath, ["node_modules"]),
+    });
   });
 
   it("refuses arbitrary paths that are not in the verified inventory", async () => {
@@ -106,6 +118,8 @@ describe("cache cleanup", () => {
       available: true,
       workingDirectories: new Map([[root, 1]]),
       error: null,
+      method: "lsof",
+      coverage: "current-user",
     };
 
     await expect(

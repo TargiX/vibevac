@@ -1,10 +1,12 @@
-import { execFile } from "node:child_process";
-import { appendFile, mkdir, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { appendFile, lstat, mkdir, readdir, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 
+import { AUDIT_HEADER, CONTRACT_HEADER, worktreePlanId } from "../engine.js";
 import type {
+  AuditRecord,
   WorktreeRemovalPlan,
   WorktreeRemovalResult,
 } from "../domain/types.js";
@@ -14,11 +16,15 @@ import {
   type ActiveProcessSnapshot,
 } from "./active-processes.js";
 import { inventoryRebuildableCaches } from "./cache-inventory.js";
-import { classifyWorkspace } from "./classifier.js";
+import {
+  classifyWorkspace,
+  remoteEvidenceIsFresh,
+  staleRemoteEvidenceReason,
+} from "./classifier.js";
 import { diskUsageBytes } from "./disk-usage.js";
 import { inspectGit } from "./git-inspector.js";
+import { runCommand } from "./run-command.js";
 
-const execFileAsync = promisify(execFile);
 const DAY_IN_MS = 86_400_000;
 const REBUILDABLE_IGNORED_FILES = new Set([
   ".eslintcache",
@@ -30,6 +36,7 @@ export interface WorktreeRemovalRequest {
   force?: boolean;
   reviewedHead?: string;
   reviewedWarnings?: string[];
+  reviewedIgnoredFingerprint?: string;
   workspacePath: string;
   minimumInactiveDays: number;
   confirmation?: string;
@@ -42,12 +49,12 @@ interface WorktreeRemovalOptions {
 }
 
 async function runGit(workspacePath: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", workspacePath, ...args], {
-    encoding: "utf8",
+  const { stdout } = await runCommand("git", ["-C", workspacePath, ...args], {
+    timeoutMs: 5_000,
     maxBuffer: 10 * 1024 * 1024,
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
   });
-  return stdout.trim();
+  return args.includes("-z") ? stdout : stdout.trim();
 }
 
 function confirmationFor(workspacePath: string, force: boolean): string {
@@ -69,6 +76,41 @@ function isNestedPath(parentPath: string, childPath: string): boolean {
   );
 }
 
+async function checkNestedGit(root: string): Promise<void> {
+  const pending = [{ path: root, depth: 0 }];
+  let remaining = 200_000;
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    if (directory.depth > 64) throw new Error("Worktree inspection limit exceeded; removal is protected");
+    const entries = await readdir(directory.path, { withFileTypes: true });
+    for (const entry of entries) {
+      if (--remaining < 0) throw new Error("Worktree inspection limit exceeded; removal is protected");
+      if (entry.name === ".git") {
+        if (directory.path !== root) throw new Error("The worktree contains a nested Git repository or checkout; handle it separately before removal");
+        continue;
+      }
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        pending.push({ path: resolve(directory.path, entry.name), depth: directory.depth + 1 });
+      }
+    }
+  }
+}
+
+async function ignoredFingerprint(workspacePath: string, entries: string[]): Promise<string> {
+  const fingerprint = createHash("sha256");
+  for (const entry of entries.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
+    const path = resolve(workspacePath, entry);
+    const metadata = await lstat(path);
+    const contents = createHash("sha256");
+    if (metadata.isSymbolicLink()) contents.update(await readlink(path, { encoding: "buffer" }));
+    else if (metadata.isFile()) {
+      for await (const chunk of createReadStream(path)) contents.update(chunk);
+    } else throw new Error("Ignored data could not be inspected; removal is protected");
+    fingerprint.update(`${entry}\0${metadata.isSymbolicLink() ? "symlink" : "file"}\0${contents.digest("hex")}\0`);
+  }
+  return fingerprint.digest("hex");
+}
+
 async function unknownIgnoredEntries(
   workspacePath: string,
   rebuildablePaths: string[],
@@ -78,7 +120,6 @@ async function unknownIgnoredEntries(
     "--others",
     "--ignored",
     "--exclude-standard",
-    "--directory",
     "-z",
   ]);
   const ignored = output
@@ -118,7 +159,8 @@ export async function planWorktreeRemoval(
   }
 
   const workspacePath = await realpath(resolve(request.workspacePath));
-  const git = await inspectGit(workspacePath);
+  const now = options.now ?? Date.now();
+  const git = await inspectGit(workspacePath, { now });
   if (git.kind !== "linked-worktree") {
     throw new Error("Only registered linked Git worktrees can be removed");
   }
@@ -131,10 +173,10 @@ export async function planWorktreeRemoval(
   if (registered.some((path) => path !== null && isNestedPath(workspacePath, path))) {
     throw new Error("A nested registered worktree must be handled separately before removing its parent");
   }
+  await checkNestedGit(workspacePath);
 
   const processes = options.processSnapshot ?? (await inspectActiveProcesses());
   const activeProcessCount = countProcessesWithin(processes, workspacePath);
-  const now = options.now ?? Date.now();
   const classification = classifyWorkspace(git, {
     activeProcessCount,
     staleAfterDays: request.minimumInactiveDays,
@@ -154,6 +196,9 @@ export async function planWorktreeRemoval(
   if (!force && (!upstream || !defaultBranch || !lastActivityAt)) {
     throw new Error("Worktree removal proof is incomplete");
   }
+  if (!force && !remoteEvidenceIsFresh(git)) {
+    throw new Error(`Worktree removal blocked: ${staleRemoteEvidenceReason(git)}`);
+  }
 
   const inactiveDays = lastActivityAt
     ? Math.max(0, Math.floor((now - Date.parse(lastActivityAt)) / DAY_IN_MS))
@@ -165,6 +210,7 @@ export async function planWorktreeRemoval(
   else if (git.ahead > 0) warnings.push(`${git.ahead} unpublished commits remain only in the shared Git repository.`);
   if (!git.remoteContainsHead) warnings.push("Current commit recovery from a remote is unproven.");
   if (git.mergedIntoDefault !== true) warnings.push("Current commit is not proven merged into the default branch.");
+  if (!remoteEvidenceIsFresh(git)) warnings.push(`Remote evidence may be outdated: ${staleRemoteEvidenceReason(git)}.`);
   if (activeProcessCount === null) warnings.push("Active-process inspection is unavailable; running tasks may break.");
   else if (activeProcessCount > 0) warnings.push(`${activeProcessCount} running processes use this worktree and may break. They will not be stopped.`);
   if (request.minimumInactiveDays > 0 && (inactiveDays === null || inactiveDays < request.minimumInactiveDays)) warnings.push(`The worktree does not meet the ${request.minimumInactiveDays}-day inactivity limit.`);
@@ -203,8 +249,10 @@ export async function planWorktreeRemoval(
   )} worktree add ${shellQuote(workspacePath)} ${shellQuote(branch)}`;
 
   return {
+    ...CONTRACT_HEADER,
     force,
     warnings: force ? warnings : [],
+    ignoredFingerprint: await ignoredFingerprint(workspacePath, unknownIgnored),
     workspacePath,
     sizeBytes: await diskUsageBytes(workspacePath),
     branch,
@@ -228,16 +276,18 @@ export async function executeWorktreeRemoval(
     throw new Error("Confirmation text does not match the revalidated worktree plan");
   }
   if (plan.force && (request.reviewedHead !== plan.head ||
-      JSON.stringify(request.reviewedWarnings) !== JSON.stringify(plan.warnings))) {
+      JSON.stringify(request.reviewedWarnings) !== JSON.stringify(plan.warnings) ||
+      request.reviewedIgnoredFingerprint !== plan.ignoredFingerprint)) {
     throw new Error("Force removal risks changed or were not reviewed; prepare a fresh preview");
   }
 
   const auditPath = options.auditPath ?? resolve(homedir(), ".vibevac/audit.jsonl");
   await mkdir(dirname(auditPath), { recursive: true });
   const completedAt = new Date().toISOString();
+  const planId = worktreePlanId(plan.workspacePath, plan.head);
 
   try {
-    await execFileAsync(
+    await runCommand(
       "git",
       [
         `--git-dir=${plan.commonGitDirectory}`,
@@ -246,13 +296,14 @@ export async function executeWorktreeRemoval(
         "--force",
         plan.workspacePath,
       ],
-      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+      { timeoutMs: 60_000, maxBuffer: 10 * 1024 * 1024 },
     );
   } catch (error) {
     await appendFile(
       auditPath,
       `${JSON.stringify({
-        version: 1,
+        ...AUDIT_HEADER,
+        planId,
         action: "worktree-removal-failed",
         completedAt: new Date().toISOString(),
         workspacePath: plan.workspacePath,
@@ -260,7 +311,7 @@ export async function executeWorktreeRemoval(
         force: plan.force,
         warnings: plan.warnings,
         error: error instanceof Error ? error.message : String(error),
-      })}\n`,
+      } satisfies AuditRecord)}\n`,
       "utf8",
     );
     throw error;
@@ -269,7 +320,8 @@ export async function executeWorktreeRemoval(
   await appendFile(
     auditPath,
     `${JSON.stringify({
-      version: 1,
+      ...AUDIT_HEADER,
+      planId,
       action: "worktree-removal",
       completedAt,
       workspacePath: plan.workspacePath,
@@ -280,11 +332,12 @@ export async function executeWorktreeRemoval(
       head: plan.head,
       upstream: plan.upstream,
       reconstructionCommand: plan.reconstructionCommand,
-    })}\n`,
+    } satisfies AuditRecord)}\n`,
     "utf8",
   );
 
   return {
+    ...CONTRACT_HEADER,
     workspacePath: plan.workspacePath,
     reclaimedBytes: plan.sizeBytes,
     preservedBranch: plan.branch,

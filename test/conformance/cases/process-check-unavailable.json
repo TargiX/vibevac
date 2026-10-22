@@ -1,0 +1,40 @@
+{
+  "name": "process check unavailable",
+  "description": "Without process evidence a merged worktree is only reviewable and its caches cannot be cleaned (fail closed).",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "write": {
+        "agent-worktree/node_modules/pkg/index.js": "module.exports = 1;\n"
+      }
+    }
+  ],
+  "workspace": "agent-worktree",
+  "processes": null,
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "cleanupSelection": [
+    "node_modules"
+  ],
+  "expected": {
+    "recommendation": "review",
+    "dataSafety": "recoverable",
+    "reasons": [
+      "active-process check was unavailable"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": false,
+    "cacheCleanupReason": "active-process check is unavailable",
+    "caches": [
+      "node_modules"
+    ],
+    "cleanup": {
+      "ok": false,
+      "error": "Active-process check is unavailable"
+    }
+  }
+}
