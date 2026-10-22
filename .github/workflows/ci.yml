@@ -64,6 +64,13 @@ jobs:
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
+      # The Node test step above skips the Rust half because dist/ui did not
+      # exist yet; here both engines must run and agree on every case.
+      - name: Check TypeScript and Rust engine conformance
+        run: pnpm test:conformance
+        env:
+          VIBEVAC_CONFORMANCE_RUST: require
+
       - name: Lint Rust
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 

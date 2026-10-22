@@ -1,0 +1,57 @@
+{
+  "name": "pushed but not merged",
+  "description": "The branch exists on the remote but is not merged into origin/main, so removal needs a human decision.",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "write": {
+        "agent-worktree/feature.ts": "export const feature = 1;\n"
+      }
+    },
+    {
+      "git": [
+        "add",
+        "feature.ts"
+      ],
+      "cwd": "agent-worktree"
+    },
+    {
+      "git": [
+        "commit",
+        "-q",
+        "-m",
+        "Pushed work"
+      ],
+      "cwd": "agent-worktree"
+    },
+    {
+      "git": [
+        "push",
+        "-q",
+        "-u",
+        "origin",
+        "agent/old"
+      ],
+      "cwd": "agent-worktree"
+    }
+  ],
+  "workspace": "agent-worktree",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "expected": {
+    "recommendation": "review",
+    "dataSafety": "recoverable",
+    "reasons": [
+      "HEAD is not merged into origin/main"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": false
+    },
+    "cacheCleanupAllowed": false,
+    "cacheCleanupReason": "no verified rebuildable caches found",
+    "caches": []
+  }
+}

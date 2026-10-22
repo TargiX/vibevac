@@ -32,6 +32,7 @@
     "desktop:build": "tauri build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:conformance": "vitest run test/conformance",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit -p ui/tsconfig.json",
     "check": "pnpm typecheck && pnpm test && pnpm build",
     "schema": "node scripts/generate-json-schema.mjs",

@@ -1,0 +1,65 @@
+{
+  "name": "node_modules with a tracked file",
+  "description": "node_modules is ignored but one file inside it was force-added; deleting the directory would delete tracked content, so it is not inventoried.",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "write": {
+        "agent-worktree/node_modules/pkg/index.js": "module.exports = 1;\n",
+        "agent-worktree/node_modules/patched/index.js": "module.exports = 'patched';\n"
+      }
+    },
+    {
+      "git": [
+        "add",
+        "-f",
+        "node_modules/patched/index.js"
+      ],
+      "cwd": "agent-worktree"
+    },
+    {
+      "git": [
+        "commit",
+        "-q",
+        "-m",
+        "Vendor a patched module"
+      ],
+      "cwd": "agent-worktree"
+    },
+    {
+      "git": [
+        "push",
+        "-q",
+        "origin",
+        "HEAD:main"
+      ],
+      "cwd": "agent-worktree"
+    }
+  ],
+  "workspace": "agent-worktree",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "cleanupSelection": [
+    "node_modules"
+  ],
+  "expected": {
+    "recommendation": "candidate",
+    "dataSafety": "recoverable",
+    "reasons": [
+      "clean, synced, merged into origin/main, and inactive for 31d"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": false,
+    "cacheCleanupReason": "no verified rebuildable caches found",
+    "caches": [],
+    "cleanup": {
+      "ok": false,
+      "error": "Cleanup refused: node_modules is not in the verified rebuildable cache inventory"
+    }
+  }
+}

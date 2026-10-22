@@ -5,6 +5,9 @@ use core::{
     WorktreeRemovalPlan, WorktreeRemovalRequest, WorktreeRemovalResult,
 };
 
+#[doc(hidden)]
+pub use crate::core::conformance::run_conformance_json;
+
 #[tauri::command]
 async fn scan_workspaces(
     stale_after_days: u64,
