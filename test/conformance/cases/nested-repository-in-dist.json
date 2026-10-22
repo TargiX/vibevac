@@ -1,0 +1,52 @@
+{
+  "name": "nested repository inside dist",
+  "description": "dist is ignored build output, but it contains its own Git repository, which may hold unpushed history. It is not inventoried. coverage is the positive control.",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "write": {
+        "agent-worktree/dist/app.js": "built\n",
+        "agent-worktree/dist/vendor-repo/README.md": "nested\n",
+        "agent-worktree/coverage/lcov.info": "TN:\n"
+      }
+    },
+    {
+      "git": [
+        "init",
+        "-q",
+        "-b",
+        "main",
+        "dist/vendor-repo"
+      ],
+      "cwd": "agent-worktree"
+    }
+  ],
+  "workspace": "agent-worktree",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "cleanupSelection": [
+    "dist"
+  ],
+  "expected": {
+    "recommendation": "candidate",
+    "dataSafety": "recoverable",
+    "reasons": [
+      "clean, synced, merged into origin/main, and inactive for 31d"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": true,
+    "cacheCleanupReason": null,
+    "caches": [
+      "coverage"
+    ],
+    "cleanup": {
+      "ok": false,
+      "error": "Cleanup refused: dist is not in the verified rebuildable cache inventory"
+    }
+  }
+}

@@ -4,6 +4,7 @@ version = "0.2.0"
 description = "Keep the work. Vacuum rebuildable weight from AI coding workspaces."
 authors = ["Ilya Moskovkin"]
 edition = "2021"
+default-run = "vibevac"
 
 [lib]
 name = "vibevac_lib"
@@ -21,6 +22,12 @@ serde_json = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc = "0.14"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

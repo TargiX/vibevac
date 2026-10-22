@@ -2,8 +2,11 @@ import { homedir } from "node:os";
 
 import pc from "picocolors";
 
+import { remoteEvidenceIsFresh } from "../services/classifier.js";
+
 import type {
   DataSafety,
+  GitInspection,
   Recommendation,
   ScanReport,
   WorkspaceReport,
@@ -65,6 +68,26 @@ function dataSafetyLabel(dataSafety: DataSafety): string {
   return "UNKNOWN";
 }
 
+// One line of remote freshness evidence, shared by `scan --details` and
+// `inspect`.
+export function formatRemoteFetchAge(git: GitInspection): string {
+  const age =
+    git.remoteFetchAgeDays === null
+      ? "unknown"
+      : git.remoteFetchAgeDays === 0
+        ? "today"
+        : `${git.remoteFetchAgeDays}d ago`;
+  const verification =
+    git.remoteVerification === "verified"
+      ? " · live check: branch matches remote"
+      : git.remoteVerification === "mismatch"
+        ? " · live check: remote branch differs or is gone"
+        : git.remoteVerification === "unavailable"
+          ? " · live check: remote unreachable"
+          : "";
+  return `remote last fetched ${age}${verification}`;
+}
+
 function row(workspace: WorkspaceReport): string {
   const status = styleRecommendation(workspace.recommendation).padEnd(20);
   const data = dataSafetyLabel(workspace.dataSafety).padEnd(8);
@@ -119,6 +142,9 @@ export function renderHumanReport(report: ScanReport): string {
   for (const workspace of report.workspaces) {
     lines.push(row(workspace));
     lines.push(pc.dim(`  ↳ ${workspace.reasons.join("; ")}`));
+    if (workspace.git) {
+      lines.push(pc.dim(`  ↳ ${formatRemoteFetchAge(workspace.git)}`));
+    }
     if (workspace.sizeError) {
       lines.push(pc.dim(`  ↳ size unavailable: ${workspace.sizeError}`));
     }
@@ -130,13 +156,16 @@ export function renderHumanReport(report: ScanReport): string {
   lines.push(
     "",
     pc.dim(
-      `CANDIDATE means clean + synced + merged + inactive for ${report.staleAfterDays}d with no detected process.`,
+      `CANDIDATE means clean + synced + merged + inactive for ${report.staleAfterDays}d with no detected process and remote state fetched within 7d.`,
     ),
     pc.dim("It is a suggestion for human review, never automatic permission to delete."),
     pc.dim("Read-only scan. VibeVac did not modify any workspace."),
   );
   if (!report.processCheckAvailable && report.processCheckError) {
     lines.push(pc.yellow("Process check unavailable; VibeVac will not produce cleanup candidates."));
+  }
+  for (const timeout of report.timeouts ?? []) {
+    lines.push(pc.yellow(`Timed out after ${timeout.seconds}s: ${timeout.command} (${timeout.workspacePath})`));
   }
   return lines.join("\n");
 }
@@ -154,6 +183,17 @@ function bar(value: number, max: number, width: number): string {
 
 // The default scan output: one figure worth sharing, where it comes from, and
 // what to do next. `renderHumanReport` keeps the full evidence table.
+export function describeProcessCheck(report: ScanReport): string | null {
+  if (!report.processCheckMethod) return null;
+  const coverage =
+    report.processCheckCoverage === "all-users"
+      ? "all users"
+      : report.processCheckCoverage === "current-user"
+        ? "current user only"
+        : "coverage unknown";
+  return `Process check: ${report.processCheckMethod}, ${coverage}`;
+}
+
 export function renderScanSummary(report: ScanReport, now = Date.now()): string {
   const sizeSkipped =
     report.workspaces.length > 0 &&
@@ -246,10 +286,21 @@ export function renderScanSummary(report: ScanReport, now = Date.now()): string 
   }
   if (!report.processCheckAvailable) {
     lines.push(
-      pc.yellow("  The active-process check is unavailable (lsof), so cleanup stays blocked."),
+      pc.yellow("  The active-process check is unavailable, so cleanup stays blocked."),
     );
   }
-  if (heldBack.length > 0 || !report.processCheckAvailable) lines.push("");
+  const timeouts = report.timeouts ?? [];
+  if (timeouts.length > 0) {
+    const count = `${timeouts.length}${timeouts.length >= 25 ? "+" : ""}`;
+    lines.push(
+      pc.yellow(`  ${count} Git or du ${timeouts.length === 1 ? "call" : "calls"} timed out and counted as failed checks (see --details).`),
+    );
+  }
+  const processCheck = describeProcessCheck(report);
+  if (processCheck) lines.push(pc.dim(`  ${processCheck}.`));
+  if (heldBack.length > 0 || !report.processCheckAvailable || timeouts.length > 0 || processCheck) {
+    lines.push("");
+  }
 
   const example = ready[0] ? compactPath(ready[0].path) : "<workspace>";
   lines.push(
@@ -306,6 +357,7 @@ export function renderWorkspaceInspection(
             ? "no"
             : "unknown"
       }`,
+      `  ${remoteEvidenceIsFresh(git) ? "✓" : "!"} Remote freshness: ${formatRemoteFetchAge(git)}`,
       `  ${workspace.activeProcessCount === 0 ? "✓" : workspace.activeProcessCount === null ? "?" : "!"} Active processes here: ${workspace.activeProcessCount ?? "unknown"}`,
       `  • Last activity signal: ${formatAge(git.lastActivityAt)}`,
       `  • Candidate threshold: ${staleAfterDays}d`,

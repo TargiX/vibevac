@@ -1,0 +1,114 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/CacheCleanupPlan",
+  "definitions": {
+    "CacheCleanupPlan": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 2
+        },
+        "engine": {
+          "$ref": "#/definitions/Engine"
+        },
+        "engineVersion": {
+          "type": "string"
+        },
+        "workspacePath": {
+          "type": "string"
+        },
+        "caches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CacheEntry"
+          }
+        },
+        "reclaimBytes": {
+          "type": "number"
+        },
+        "confirmation": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "caches",
+        "confirmation",
+        "engine",
+        "engineVersion",
+        "reclaimBytes",
+        "schemaVersion",
+        "workspacePath"
+      ],
+      "additionalProperties": false
+    },
+    "Engine": {
+      "type": "string",
+      "enum": [
+        "node",
+        "native"
+      ]
+    },
+    "CacheEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "relativePath": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/CacheKind"
+        },
+        "sizeBytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sizeError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ignoredByGit": {
+          "type": "boolean",
+          "const": true
+        },
+        "rebuildHint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "relativePath",
+        "name",
+        "kind",
+        "sizeBytes",
+        "sizeError",
+        "ignoredByGit",
+        "rebuildHint"
+      ],
+      "additionalProperties": false
+    },
+    "CacheKind": {
+      "type": "string",
+      "enum": [
+        "dependencies",
+        "framework-build",
+        "build-output",
+        "test-output",
+        "tool-cache"
+      ]
+    }
+  }
+}

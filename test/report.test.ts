@@ -52,6 +52,9 @@ function scanReport(workspaces: WorkspaceReport[], processCheckAvailable = true)
   const sum = (pick: (item: WorkspaceReport) => number) =>
     workspaces.reduce((total, item) => total + pick(item), 0);
   return {
+    schemaVersion: 2,
+    engine: "node",
+    engineVersion: "0.0.0-test",
     generatedAt: "2026-07-13T12:00:00.000Z",
     roots: [],
     workspaces,
@@ -81,6 +84,9 @@ describe("report formatting", () => {
 
   it("does not claim zero usage when size calculation was skipped", () => {
     const output = renderHumanReport({
+      schemaVersion: 2,
+      engine: "node",
+      engineVersion: "0.0.0-test",
       generatedAt: "2026-07-13T12:00:00.000Z",
       roots: [],
       workspaces: [
@@ -150,12 +156,16 @@ describe("report formatting", () => {
         mergedIntoDefault: true,
         lastCommitAt: "2026-06-01T00:00:00.000Z",
         lastActivityAt: "2026-06-01T00:00:00.000Z",
+        remoteFetchedAt: "2026-06-01T00:00:00.000Z",
+        remoteFetchAgeDays: 23,
+        remoteVerification: "skipped",
       },
     };
 
     const output = renderWorkspaceInspection(workspace, 14);
 
     expect(output).toContain("CANDIDATE means");
+    expect(output).toContain("Remote freshness: remote last fetched 23d ago");
     expect(output).toContain("cannot know whether the project still matters");
     expect(output).toContain("will not delete or modify");
   });
@@ -189,6 +199,34 @@ describe("report formatting", () => {
 
     expect(output).toContain("Nothing is ready to clean right now.");
     expect(output).toContain("active-process check is unavailable");
+  });
+
+  it("prints a one-line timeout count only when calls timed out", () => {
+    const report = scanReport([workspace("/work/app", [cache("node_modules", "Installed dependencies", GB)])]);
+    expect(renderScanSummary(report)).not.toContain("timed out");
+    const output = renderScanSummary({
+      ...report,
+      timeouts: [{ workspacePath: "/work/app", command: "git status --porcelain=v1 -z", seconds: 5 }],
+    });
+    expect(output).toContain("1 Git or du call timed out");
+  });
+
+  it("names the process check method and coverage in the footer", () => {
+    const report = scanReport([
+      workspace("/work/app", [cache("node_modules", "Installed dependencies", GB)]),
+    ]);
+
+    expect(
+      renderScanSummary({
+        ...report,
+        processCheckMethod: "libproc",
+        processCheckCoverage: "current-user",
+      }),
+    ).toContain("Process check: libproc, current user only.");
+    expect(
+      renderScanSummary({ ...report, processCheckMethod: "procfs", processCheckCoverage: "all-users" }),
+    ).toContain("Process check: procfs, all users.");
+    expect(renderScanSummary(report)).not.toContain("Process check:");
   });
 
   it("suggests a root when no workspaces were found", () => {

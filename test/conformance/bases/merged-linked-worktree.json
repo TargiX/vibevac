@@ -1,0 +1,95 @@
+{
+  "description": "A repository pushed to a bare origin, plus a clean linked worktree `agent-worktree` on branch agent/old that tracks origin/main and adds nothing to it, then fetches from inside the worktree so FETCH_HEAD exists as remote freshness evidence.",
+  "steps": [
+    {
+      "git": [
+        "init",
+        "-q",
+        "--bare",
+        "-b",
+        "main",
+        "remote.git"
+      ]
+    },
+    {
+      "git": [
+        "init",
+        "-q",
+        "-b",
+        "main",
+        "repository"
+      ]
+    },
+    {
+      "write": {
+        "repository/.gitignore": "node_modules\ntarget\ndist\ncoverage\n",
+        "repository/pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+        "repository/source.ts": "export const valuable = true;\n"
+      }
+    },
+    {
+      "git": [
+        "add",
+        "."
+      ],
+      "cwd": "repository"
+    },
+    {
+      "git": [
+        "commit",
+        "-q",
+        "-m",
+        "Initial fixture"
+      ],
+      "cwd": "repository"
+    },
+    {
+      "git": [
+        "remote",
+        "add",
+        "origin",
+        "{root}/remote.git"
+      ],
+      "cwd": "repository"
+    },
+    {
+      "git": [
+        "push",
+        "-q",
+        "-u",
+        "origin",
+        "main"
+      ],
+      "cwd": "repository"
+    },
+    {
+      "git": [
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "agent/old",
+        "{root}/agent-worktree"
+      ],
+      "cwd": "repository"
+    },
+    {
+      "git": [
+        "branch",
+        "-q",
+        "--set-upstream-to",
+        "origin/main",
+        "agent/old"
+      ],
+      "cwd": "agent-worktree"
+    },
+    {
+      "git": [
+        "fetch",
+        "-q",
+        "origin"
+      ],
+      "cwd": "agent-worktree"
+    }
+  ]
+}

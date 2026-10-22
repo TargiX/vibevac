@@ -1,0 +1,34 @@
+{
+  "name": "stale remote fetch evidence",
+  "description": "Clean, synced, merged and inactive like the candidate case, but the last git fetch was 23 days before the clock. Old remote-tracking refs are not proof the remote still has the commits, so it is reviewed, not a candidate (roadmap 0.3.2).",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "write": {
+        "agent-worktree/node_modules/pkg/index.js": "module.exports = 1;\n"
+      }
+    }
+  ],
+  "workspace": "agent-worktree",
+  "fetchedAt": "2026-01-09T00:00:00.000Z",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "expected": {
+    "recommendation": "review",
+    "dataSafety": "recoverable",
+    "reasons": [
+      "remote state last fetched 23d ago; run git fetch to refresh"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": true,
+    "cacheCleanupReason": null,
+    "caches": [
+      "node_modules"
+    ]
+  }
+}

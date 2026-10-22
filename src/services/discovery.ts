@@ -1,18 +1,15 @@
-import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { existsSync } from "node:fs";
 import { access, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { promisify } from "node:util";
 
 import type {
   DiscoveryRoot,
   WorkspaceCandidate,
   WorkspaceTool,
 } from "../domain/types.js";
-
-const execFileAsync = promisify(execFile);
+import { runCommand } from "./run-command.js";
 
 const SKIPPED_DIRECTORIES = new Set([
   ".git",
@@ -93,10 +90,14 @@ async function registeredWorktrees(
 ): Promise<WorkspaceCandidate[]> {
   try {
     const repositoryRealPath = await realpath(repositoryPath).catch(() => resolve(repositoryPath));
-    const { stdout } = await execFileAsync(
+    const { stdout } = await runCommand(
       "git",
       ["-C", repositoryPath, "worktree", "list", "--porcelain"],
-      { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } },
+      {
+        timeoutMs: 5_000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      },
     );
     const candidates: WorkspaceCandidate[] = [];
     let worktreePath: string | null = null;

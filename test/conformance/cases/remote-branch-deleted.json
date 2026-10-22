@@ -1,0 +1,55 @@
+{
+  "name": "branch deleted on remote but ref still local",
+  "description": "The worktree's branch was pushed, then deleted on the remote from another clone after this clone's last fetch 23 days ago. refs/remotes/origin/agent/old still exists locally, so only the fetch age stops it from looking like a fully proven candidate (roadmap 0.3.2 acceptance).",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "git": [
+        "push",
+        "-q",
+        "-u",
+        "origin",
+        "agent/old"
+      ],
+      "cwd": "agent-worktree"
+    },
+    {
+      "git": [
+        "clone",
+        "-q",
+        "{root}/remote.git",
+        "other-clone"
+      ]
+    },
+    {
+      "git": [
+        "push",
+        "-q",
+        "origin",
+        "--delete",
+        "agent/old"
+      ],
+      "cwd": "other-clone"
+    }
+  ],
+  "workspace": "agent-worktree",
+  "fetchedAt": "2026-01-09T00:00:00.000Z",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "expected": {
+    "recommendation": "review",
+    "dataSafety": "recoverable",
+    "reasons": [
+      "remote state last fetched 23d ago; run git fetch to refresh"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": false,
+    "cacheCleanupReason": "no verified rebuildable caches found",
+    "caches": []
+  }
+}

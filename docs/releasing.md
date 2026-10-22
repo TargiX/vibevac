@@ -43,7 +43,11 @@ Before publishing a DMG:
 3. sign the app with an Apple Developer ID Application certificate;
 4. notarize the signed bundle with Apple and staple the ticket;
 5. verify with `codesign --verify --deep --strict`, `spctl --assess`, and
-   `stapler validate`;
+   `stapler validate`; the release workflow also launches the notarized app
+   with `VIBEVAC_SMOKE=1`, which scans the fixture from
+   `scripts/create-smoke-fixture.sh` (`VIBEVAC_SMOKE_ROOT`), writes the report
+   to `VIBEVAC_SMOKE_OUT` and quits without a window; the report must validate
+   against `docs/json-schema/scan-report.json`;
 6. install the DMG on a clean macOS user account and complete a read-only scan;
 7. attach the DMG to a GitHub Release and publish checksums.
 

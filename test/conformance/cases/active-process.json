@@ -1,0 +1,42 @@
+{
+  "name": "running process inside the worktree",
+  "description": "A process whose working directory is inside the worktree keeps it and blocks cache cleanup.",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "write": {
+        "agent-worktree/node_modules/pkg/index.js": "module.exports = 1;\n"
+      }
+    }
+  ],
+  "workspace": "agent-worktree",
+  "processes": [
+    "agent-worktree/src"
+  ],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "cleanupSelection": [
+    "node_modules"
+  ],
+  "expected": {
+    "recommendation": "keep",
+    "dataSafety": "recoverable",
+    "reasons": [
+      "1 running process has a working directory here"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": false,
+    "cacheCleanupReason": "a running process is using this workspace",
+    "caches": [
+      "node_modules"
+    ],
+    "cleanup": {
+      "ok": false,
+      "error": "Cleanup blocked: 1 running process is using this workspace"
+    }
+  }
+}

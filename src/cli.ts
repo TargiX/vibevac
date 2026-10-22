@@ -2,7 +2,7 @@
 
 import { Command, Option } from "commander";
 import { realpath } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { ENGINE_VERSION } from "./engine.js";
 import { resolve } from "node:path";
 
 import { customDiscoveryRoots, defaultDiscoveryRoots } from "./services/discovery.js";
@@ -22,6 +22,7 @@ interface ScanCommandOptions {
   details: boolean;
   size: boolean;
   staleAfter: number;
+  verifyRemote: boolean;
 }
 
 // Progress goes to stderr and only to a terminal, so piped or JSON output
@@ -56,16 +57,13 @@ function portNumber(value: string): number {
   return parsed;
 }
 
-// Read at runtime so the CLI version cannot drift from package.json. The path
-// is the same from src/ under tsx and from dist/ in the published package.
-const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
 const program = new Command();
 
 program
   .name("vibevac")
   .description("Safely find disk space trapped in AI coding workspaces")
-  .version(version);
+  .version(ENGINE_VERSION);
 
 program
   .command("scan", { isDefault: true })
@@ -84,6 +82,11 @@ program
     positiveInteger,
     14,
   )
+  .option(
+    "--verify-remote",
+    "ask each upstream remote whether its branch still matches (network; 15 s timeout)",
+    false,
+  )
   .action(async (options: ScanCommandOptions) => {
     const roots =
       options.root.length > 0 ? customDiscoveryRoots(options.root) : defaultDiscoveryRoots();
@@ -93,6 +96,7 @@ program
     const report = await scanWorkspaces(roots, {
       includeSize: options.size,
       staleAfterDays: options.staleAfter,
+      verifyRemote: options.verifyRemote,
       onProgress: progress.update,
     }).finally(progress.clear);
 
@@ -118,10 +122,15 @@ program
     positiveInteger,
     14,
   )
+  .option(
+    "--verify-remote",
+    "ask each upstream remote whether its branch still matches (network; 15 s timeout)",
+    false,
+  )
   .action(
     async (
       path: string,
-      options: Pick<ScanCommandOptions, "json" | "size" | "staleAfter">,
+      options: Pick<ScanCommandOptions, "json" | "size" | "staleAfter" | "verifyRemote">,
     ) => {
       const workspacePath = await realpath(resolve(path));
       const report = await scanWorkspaces(
@@ -129,6 +138,7 @@ program
         {
           includeSize: options.size,
           staleAfterDays: options.staleAfter,
+          verifyRemote: options.verifyRemote,
         },
       );
       const workspace = report.workspaces.find((candidate) => candidate.path === workspacePath);

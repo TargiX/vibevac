@@ -32,8 +32,10 @@
     "desktop:build": "tauri build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:conformance": "vitest run test/conformance",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit -p ui/tsconfig.json",
     "check": "pnpm typecheck && pnpm test && pnpm build",
+    "schema": "node scripts/generate-json-schema.mjs",
     "prepublishOnly": "pnpm build"
   },
   "keywords": [
@@ -69,6 +71,8 @@
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@types/node": "^24.0.0",
     "@vitejs/plugin-vue": "^6.0.0",
+    "ajv": "8",
+    "ts-json-schema-generator": "2",
     "tsup": "^8.5.0",
     "tsx": "^4.20.0",
     "typescript": "^5.8.0",

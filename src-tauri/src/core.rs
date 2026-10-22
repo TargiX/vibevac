@@ -1,3 +1,7 @@
+use crate::active_processes::{
+    count_processes_within, inspect_active_processes, open_files_within, ActiveProcessSnapshot,
+    ProcessCheckCoverage, ProcessCheckMethod,
+};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -8,10 +12,16 @@ use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DAY_IN_SECONDS: i64 = 86_400;
+const SCHEMA_VERSION: u8 = 2;
+const AUDIT_VERSION: u8 = 2;
+const ENGINE: &str = "native";
+const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
+const REMOTE_FETCH_MAX_AGE_DAYS: u64 = 7;
+const REMOTE_VERIFY_TIMEOUT: Duration = Duration::from_secs(15);
 const CACHE_MAX_DEPTH: u8 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -50,6 +60,15 @@ enum Recommendation {
     Keep,
     Review,
     Protect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum RemoteVerification {
+    Verified,
+    Mismatch,
+    Unavailable,
+    Skipped,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -107,6 +126,9 @@ struct GitInspection {
     merged_into_default: Option<bool>,
     last_commit_at: Option<String>,
     last_activity_at: Option<String>,
+    remote_fetched_at: Option<String>,
+    remote_fetch_age_days: Option<u64>,
+    remote_verification: RemoteVerification,
 }
 
 #[derive(Clone, Debug)]
@@ -141,6 +163,9 @@ struct WorkspaceReport {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ScanReport {
+    schema_version: u8,
+    engine: &'static str,
+    engine_version: &'static str,
     generated_at: String,
     roots: Vec<DiscoveryRoot>,
     workspaces: Vec<WorkspaceReport>,
@@ -152,6 +177,8 @@ pub(crate) struct ScanReport {
     stale_after_days: u64,
     process_check_available: bool,
     process_check_error: Option<String>,
+    process_check_method: Option<ProcessCheckMethod>,
+    process_check_coverage: Option<ProcessCheckCoverage>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -166,6 +193,9 @@ pub(crate) struct CleanupRequest {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CacheCleanupPlan {
+    schema_version: u8,
+    engine: &'static str,
+    engine_version: &'static str,
     workspace_path: String,
     caches: Vec<CacheEntry>,
     reclaim_bytes: u64,
@@ -215,6 +245,9 @@ struct RemovedCache {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CacheCleanupResult {
+    schema_version: u8,
+    engine: &'static str,
+    engine_version: &'static str,
     workspace_path: String,
     removed: Vec<RemovedCache>,
     reclaimed_bytes: u64,
@@ -242,6 +275,9 @@ pub(crate) struct WorktreeRemovalRequest {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorktreeRemovalPlan {
+    schema_version: u8,
+    engine: &'static str,
+    engine_version: &'static str,
     force: bool,
     warnings: Vec<String>,
     ignored_fingerprint: String,
@@ -261,19 +297,15 @@ pub(crate) struct WorktreeRemovalPlan {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorktreeRemovalResult {
+    schema_version: u8,
+    engine: &'static str,
+    engine_version: &'static str,
     workspace_path: String,
     reclaimed_bytes: u64,
     preserved_branch: String,
     reconstruction_command: String,
     completed_at: String,
     audit_path: String,
-}
-
-#[derive(Clone, Debug)]
-struct ActiveProcessSnapshot {
-    available: bool,
-    working_directories: BTreeMap<PathBuf, u64>,
-    error: Option<String>,
 }
 
 // A familiar name is not enough for ecosystem caches whose names are also
@@ -393,6 +425,190 @@ fn parse_ahead_behind(output: Option<String>) -> (Option<u64>, Option<u64>) {
     }
 }
 
+fn remote_name_for(upstream: Option<&str>) -> &str {
+    upstream
+        .and_then(|value| value.split('/').next())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("origin")
+}
+
+fn newest_modified_within(directory: &Path, depth: u8) -> Option<i64> {
+    if depth > 32 {
+        return None;
+    }
+    fs::read_dir(directory)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_dir() {
+                newest_modified_within(&entry.path(), depth + 1)
+            } else if file_type.is_file() {
+                modified_seconds(&entry.path())
+            } else {
+                None
+            }
+        })
+        .max()
+}
+
+fn absolute_git_path(workspace_path: &Path, args: &[&str]) -> Option<PathBuf> {
+    try_git(workspace_path, args)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                workspace_path.join(path)
+            }
+        })
+}
+
+// Remote freshness evidence: when this clone last heard from its remote.
+// FETCH_HEAD is per worktree, so both the shared and the worktree copy count.
+// Without one, the newest remote-tracking ref (loose or packed) stands in.
+fn remote_fetched_seconds(workspace_path: &Path, remote: &str) -> Option<i64> {
+    let remotes = try_git(workspace_path, &["remote"])?;
+    if !remotes.lines().any(|name| name.trim() == remote) {
+        return None;
+    }
+    let common_directory = absolute_git_path(
+        workspace_path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let worktree_fetch_head = absolute_git_path(
+        workspace_path,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "FETCH_HEAD",
+        ],
+    );
+    let fetch_head = [
+        modified_seconds(&common_directory.join("FETCH_HEAD")),
+        worktree_fetch_head.as_deref().and_then(modified_seconds),
+    ]
+    .into_iter()
+    .flatten()
+    .max();
+    if fetch_head.is_some() {
+        return fetch_head;
+    }
+
+    let packed_refs_path = common_directory.join("packed-refs");
+    let packed_refs = fs::read_to_string(&packed_refs_path).unwrap_or_default();
+    [
+        newest_modified_within(&common_directory.join("refs/remotes").join(remote), 0),
+        if packed_refs.contains(&format!(" refs/remotes/{remote}/")) {
+            modified_seconds(&packed_refs_path)
+        } else {
+            None
+        },
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+}
+
+fn age_in_days(timestamp_seconds: i64, now_seconds: i64) -> u64 {
+    ((now_seconds - timestamp_seconds).max(0) / DAY_IN_SECONDS) as u64
+}
+
+// The only network call VibeVac makes, and only on explicit request: ask the
+// remote for the upstream branch and compare it with the local tracking ref.
+fn verify_upstream_with_remote(
+    workspace_path: &Path,
+    upstream: Option<&str>,
+) -> RemoteVerification {
+    let Some((remote, branch)) = upstream.and_then(|value| value.split_once('/')) else {
+        return RemoteVerification::Skipped;
+    };
+    if remote.is_empty() {
+        return RemoteVerification::Skipped;
+    }
+    let branch_ref = format!("refs/heads/{branch}");
+    let tracking_ref = format!("refs/remotes/{remote}/{branch}");
+    let Some(local_head) = try_git(
+        workspace_path,
+        &["rev-parse", "--verify", "--quiet", &tracking_ref],
+    )
+    .filter(|value| !value.is_empty()) else {
+        return RemoteVerification::Skipped;
+    };
+
+    let Ok(mut child) = Command::new("git")
+        .arg("-C")
+        .arg(workspace_path)
+        .args(["ls-remote", "--exit-code", "--heads", remote, &branch_ref])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return RemoteVerification::Unavailable;
+    };
+    let deadline = Instant::now() + REMOTE_VERIFY_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return RemoteVerification::Unavailable;
+            }
+        }
+    };
+    // Exit code 2: the remote answered and the branch no longer exists there.
+    if status.code() == Some(2) {
+        return RemoteVerification::Mismatch;
+    }
+    if !status.success() {
+        return RemoteVerification::Unavailable;
+    }
+    let mut stdout = String::new();
+    if child
+        .stdout
+        .take()
+        .is_none_or(|mut pipe| pipe.read_to_string(&mut stdout).is_err())
+    {
+        return RemoteVerification::Unavailable;
+    }
+    let remote_head = stdout.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let sha = fields.next()?;
+        (fields.next()? == branch_ref).then_some(sha)
+    });
+    if remote_head == Some(local_head.as_str()) {
+        RemoteVerification::Verified
+    } else {
+        RemoteVerification::Mismatch
+    }
+}
+
+// Inspection against an explicit clock, optionally with the live remote check.
+fn inspect_git_at(
+    workspace_path: &Path,
+    now_seconds: i64,
+    verify_remote: bool,
+) -> Result<GitInspection, String> {
+    let mut git = inspect_git(workspace_path)?;
+    git.remote_fetch_age_days = git
+        .remote_fetched_at
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|timestamp| age_in_days(timestamp.timestamp(), now_seconds));
+    if verify_remote {
+        git.remote_verification =
+            verify_upstream_with_remote(workspace_path, git.upstream.as_deref());
+    }
+    Ok(git)
+}
+
 fn inspect_git(workspace_path: &Path) -> Result<GitInspection, String> {
     run_git(workspace_path, &["rev-parse", "--is-inside-work-tree"])?;
 
@@ -451,6 +667,8 @@ fn inspect_git(workspace_path: &Path) -> Result<GitInspection, String> {
     let commit_seconds = try_git(workspace_path, &["log", "-1", "--format=%ct"])
         .and_then(|value| value.parse::<i64>().ok());
     let default_branch = resolve_default_branch(workspace_path, upstream.as_deref());
+    let fetched_seconds =
+        remote_fetched_seconds(workspace_path, remote_name_for(upstream.as_deref()));
     let merged_into_default = default_branch.as_deref().map(|branch_name| {
         git_succeeds(
             workspace_path,
@@ -496,48 +714,10 @@ fn inspect_git(workspace_path: &Path) -> Result<GitInspection, String> {
         merged_into_default,
         last_commit_at: commit_seconds.and_then(timestamp_iso),
         last_activity_at: last_activity_seconds.and_then(timestamp_iso),
-    })
-}
-
-fn inspect_active_processes() -> ActiveProcessSnapshot {
-    match Command::new("lsof")
-        .args(["-a", "-d", "cwd", "-Fpn"])
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            let mut working_directories = BTreeMap::new();
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                if let Some(path) = line.strip_prefix('n').filter(|value| !value.is_empty()) {
-                    *working_directories.entry(PathBuf::from(path)).or_insert(0) += 1;
-                }
-            }
-            ActiveProcessSnapshot {
-                available: true,
-                working_directories,
-                error: None,
-            }
-        }
-        Ok(output) => ActiveProcessSnapshot {
-            available: false,
-            working_directories: BTreeMap::new(),
-            error: Some(command_error("lsof", &output)),
-        },
-        Err(error) => ActiveProcessSnapshot {
-            available: false,
-            working_directories: BTreeMap::new(),
-            error: Some(format!("Could not run lsof: {error}")),
-        },
-    }
-}
-
-fn count_processes_within(snapshot: &ActiveProcessSnapshot, workspace_path: &Path) -> Option<u64> {
-    snapshot.available.then(|| {
-        snapshot
-            .working_directories
-            .iter()
-            .filter(|(working_directory, _)| working_directory.starts_with(workspace_path))
-            .map(|(_, count)| count)
-            .sum()
+        remote_fetched_at: fetched_seconds.and_then(timestamp_iso),
+        remote_fetch_age_days: fetched_seconds
+            .map(|seconds| age_in_days(seconds, Utc::now().timestamp())),
+        remote_verification: RemoteVerification::Skipped,
     })
 }
 
@@ -1196,6 +1376,27 @@ fn inventory_rebuildable_caches(workspace_path: &Path) -> Result<Vec<CacheEntry>
     Ok(caches)
 }
 
+// A passed live check is current evidence; a mismatch or an unreachable remote
+// never upgrades the local fetch age.
+fn remote_evidence_age_days(git: &GitInspection) -> Option<u64> {
+    if git.remote_verification == RemoteVerification::Verified {
+        Some(0)
+    } else {
+        git.remote_fetch_age_days
+    }
+}
+
+fn remote_evidence_is_fresh(git: &GitInspection) -> bool {
+    remote_evidence_age_days(git).is_some_and(|days| days <= REMOTE_FETCH_MAX_AGE_DAYS)
+}
+
+fn stale_remote_evidence_reason(git: &GitInspection) -> String {
+    match remote_evidence_age_days(git) {
+        Some(days) => format!("remote state last fetched {days}d ago; run git fetch to refresh"),
+        None => "remote fetch time is unknown; run git fetch to refresh".to_owned(),
+    }
+}
+
 fn classify_workspace(
     git: Option<&GitInspection>,
     active_process_count: Option<u64>,
@@ -1264,8 +1465,8 @@ fn classify_workspace(
             data_safety: DataSafety::Recoverable,
             recommendation: Recommendation::Keep,
             reasons: vec![format!(
-                "{count} running process{} working inside this workspace",
-                if count == 1 { " is" } else { "es are" }
+                "{count} running process{} a working directory here",
+                if count == 1 { " has" } else { "es have" }
             )],
         };
     }
@@ -1327,6 +1528,13 @@ fn classify_workspace(
             reasons: vec!["last workspace activity is unknown".to_owned()],
         };
     };
+    if !remote_evidence_is_fresh(git) {
+        return Classification {
+            data_safety: DataSafety::Recoverable,
+            recommendation: Recommendation::Review,
+            reasons: vec![stale_remote_evidence_reason(git)],
+        };
+    }
     Classification {
         data_safety: DataSafety::Recoverable,
         recommendation: Recommendation::Candidate,
@@ -1344,8 +1552,10 @@ fn scan_candidate(
     processes: &ActiveProcessSnapshot,
     stale_after_days: u64,
     now_seconds: i64,
+    verify_remote: bool,
 ) -> WorkspaceReport {
-    let (git, inspection_error) = match inspect_git(&candidate.path) {
+    let (git, inspection_error) = match inspect_git_at(&candidate.path, now_seconds, verify_remote)
+    {
         Ok(git) => (Some(git), None),
         Err(error) => (None, Some(error)),
     };
@@ -1458,9 +1668,32 @@ fn exclude_nested_workspace_sizes(workspaces: &mut [WorkspaceReport]) {
 pub(crate) fn scan_workspaces(
     stale_after_days: u64,
     custom_roots: Vec<String>,
+    verify_remote: bool,
+) -> Result<ScanReport, String> {
+    scan_discovery_roots(stale_after_days, discovery_roots(custom_roots)?, verify_remote)
+}
+
+// Scans one root without the default roots, for the release smoke test.
+pub(crate) fn scan_single_root(stale_after_days: u64, root: &str) -> Result<ScanReport, String> {
+    let path = fs::canonicalize(root)
+        .map_err(|error| format!("Could not resolve scan root {root}: {error}"))?;
+    scan_discovery_roots(
+        stale_after_days,
+        vec![DiscoveryRoot {
+            tool: WorkspaceTool::Custom,
+            path: path.to_string_lossy().into_owned(),
+            max_depth: 4,
+        }],
+        false,
+    )
+}
+
+fn scan_discovery_roots(
+    stale_after_days: u64,
+    roots: Vec<DiscoveryRoot>,
+    verify_remote: bool,
 ) -> Result<ScanReport, String> {
     let stale_after_days = stale_after_days.clamp(1, 365);
-    let roots = discovery_roots(custom_roots)?;
     let candidates = discover_workspaces(&roots);
     let processes = inspect_active_processes();
     let now_seconds = SystemTime::now()
@@ -1469,7 +1702,15 @@ pub(crate) fn scan_workspaces(
         .as_secs() as i64;
     let mut workspaces: Vec<WorkspaceReport> = candidates
         .par_iter()
-        .map(|candidate| scan_candidate(candidate, &processes, stale_after_days, now_seconds))
+        .map(|candidate| {
+            scan_candidate(
+                candidate,
+                &processes,
+                stale_after_days,
+                now_seconds,
+                verify_remote,
+            )
+        })
         .collect();
     exclude_nested_workspace_sizes(&mut workspaces);
     workspaces.sort_by(|left, right| {
@@ -1484,6 +1725,9 @@ pub(crate) fn scan_workspaces(
     });
 
     Ok(ScanReport {
+        schema_version: SCHEMA_VERSION,
+        engine: ENGINE,
+        engine_version: ENGINE_VERSION,
         generated_at: now_iso(),
         total_size_bytes: workspaces
             .iter()
@@ -1512,6 +1756,8 @@ pub(crate) fn scan_workspaces(
         stale_after_days,
         process_check_available: processes.available,
         process_check_error: processes.error,
+        process_check_method: processes.method,
+        process_check_coverage: processes.coverage,
     })
 }
 
@@ -1597,6 +1843,9 @@ fn plan_cache_cleanup_with_snapshot(
     let reclaim_bytes = caches.iter().filter_map(|cache| cache.size_bytes).sum();
 
     Ok(CacheCleanupPlan {
+        schema_version: SCHEMA_VERSION,
+        engine: ENGINE,
+        engine_version: ENGINE_VERSION,
         workspace_path: workspace_path.to_string_lossy().into_owned(),
         caches,
         reclaim_bytes,
@@ -1771,7 +2020,7 @@ fn plan_worktree_removal_with_snapshot(
 
     let workspace_path = fs::canonicalize(&request.workspace_path)
         .map_err(|error| format!("Could not resolve workspace path: {error}"))?;
-    let git = inspect_git(&workspace_path)?;
+    let git = inspect_git_at(&workspace_path, now_seconds, false)?;
     if git.kind != WorkspaceKind::LinkedWorktree {
         return Err("Only registered linked Git worktrees can be removed".to_owned());
     }
@@ -1794,6 +2043,17 @@ fn plan_worktree_removal_with_snapshot(
         );
     }
     check_nested_git(&workspace_path)?;
+    let open_file_error = match open_files_within(&workspace_path) {
+        Ok(0) => None,
+        Ok(count) => {
+            return Err(format!(
+                "Worktree removal blocked: {count} open file{} inside this worktree",
+                if count == 1 { "" } else { "s" }
+            ))
+        }
+        Err(error) if request.force => Some(error),
+        Err(error) => return Err(format!("Worktree removal blocked: {error}")),
+    };
 
     let active_process_count = count_processes_within(processes, &workspace_path);
     let classification = classify_workspace(
@@ -1820,6 +2080,12 @@ fn plan_worktree_removal_with_snapshot(
         && (upstream.is_none() || default_branch.is_none() || last_activity_at.is_none())
     {
         return Err("Worktree removal proof is incomplete".to_owned());
+    }
+    if !request.force && !remote_evidence_is_fresh(&git) {
+        return Err(format!(
+            "Worktree removal blocked: {}",
+            stale_remote_evidence_reason(&git)
+        ));
     }
     let inactive_days = last_activity_at
         .as_ref()
@@ -1848,6 +2114,12 @@ fn plan_worktree_removal_with_snapshot(
     if git.merged_into_default != Some(true) {
         warnings.push("Current commit is not proven merged into the default branch.".to_owned());
     }
+    if !remote_evidence_is_fresh(&git) {
+        warnings.push(format!(
+            "Remote evidence may be outdated: {}.",
+            stale_remote_evidence_reason(&git)
+        ));
+    }
     match active_process_count {
         None => warnings
             .push("Active-process inspection is unavailable; running tasks may break.".to_owned()),
@@ -1855,6 +2127,11 @@ fn plan_worktree_removal_with_snapshot(
             "{count} running processes use this worktree and may break. They will not be stopped."
         )),
         _ => {}
+    }
+    if let Some(error) = open_file_error {
+        warnings.push(format!(
+            "Open-file inspection failed ({error}); files in use may be lost."
+        ));
     }
     if request.minimum_inactive_days > 0
         && inactive_days.is_none_or(|age| age < request.minimum_inactive_days)
@@ -1920,6 +2197,9 @@ fn plan_worktree_removal_with_snapshot(
     );
 
     Ok(WorktreeRemovalPlan {
+        schema_version: SCHEMA_VERSION,
+        engine: ENGINE,
+        engine_version: ENGINE_VERSION,
         force: request.force,
         warnings: if request.force { warnings } else { Vec::new() },
         ignored_fingerprint: ignored_fingerprint(&workspace_path, &unknown_ignored)?,
@@ -1965,6 +2245,47 @@ pub(crate) fn plan_worktree_removal_batch(
     ))
 }
 
+// Both engines hash the same JSON: fields in declaration order, cache paths
+// sorted bytewise. See `cachePlanId` in src/engine.ts.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CachePlanIdentity<'a> {
+    workspace_path: &'a str,
+    relative_paths: Vec<&'a str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreePlanIdentity<'a> {
+    workspace_path: &'a str,
+    head: &'a str,
+}
+
+fn plan_id(identity: &impl Serialize) -> String {
+    let json = serde_json::to_string(identity).unwrap_or_default();
+    Sha256::digest(json.as_bytes())
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn cache_plan_id(workspace_path: &str, relative_paths: &[&str]) -> String {
+    let mut relative_paths = relative_paths.to_vec();
+    relative_paths.sort_unstable();
+    plan_id(&CachePlanIdentity {
+        workspace_path,
+        relative_paths,
+    })
+}
+
+fn worktree_plan_id(workspace_path: &str, head: &str) -> String {
+    plan_id(&WorktreePlanIdentity {
+        workspace_path,
+        head,
+    })
+}
+
 fn open_audit_file(path: &Path) -> Result<File, String> {
     let parent = path
         .parent()
@@ -1997,6 +2318,14 @@ fn execute_cache_cleanup_with_options(
     }
 
     let mut audit_file = open_audit_file(audit_path)?;
+    let plan_id = cache_plan_id(
+        &plan.workspace_path,
+        &plan
+            .caches
+            .iter()
+            .map(|cache| cache.relative_path.as_str())
+            .collect::<Vec<_>>(),
+    );
     let mut removed = Vec::<RemovedCache>::new();
     let completed_at = now_iso();
     for cache in &plan.caches {
@@ -2009,7 +2338,10 @@ fn execute_cache_cleanup_with_options(
             let audit_result = append_audit(
                 &mut audit_file,
                 &json!({
-                    "version": 1,
+                    "version": AUDIT_VERSION,
+                    "engine": ENGINE,
+                    "engineVersion": ENGINE_VERSION,
+                    "planId": plan_id,
                     "action": "cache-cleanup-partial",
                     "completedAt": now_iso(),
                     "workspacePath": plan.workspace_path,
@@ -2031,7 +2363,10 @@ fn execute_cache_cleanup_with_options(
     append_audit(
         &mut audit_file,
         &json!({
-            "version": 1,
+            "version": AUDIT_VERSION,
+            "engine": ENGINE,
+            "engineVersion": ENGINE_VERSION,
+            "planId": plan_id,
             "action": "cache-cleanup",
             "completedAt": completed_at,
             "workspacePath": plan.workspace_path,
@@ -2041,6 +2376,9 @@ fn execute_cache_cleanup_with_options(
     )?;
 
     Ok(CacheCleanupResult {
+        schema_version: SCHEMA_VERSION,
+        engine: ENGINE,
+        engine_version: ENGINE_VERSION,
         workspace_path: plan.workspace_path,
         removed,
         reclaimed_bytes: plan.reclaim_bytes,
@@ -2080,6 +2418,7 @@ fn execute_worktree_removal_with_options(
     }
 
     let mut audit_file = open_audit_file(audit_path)?;
+    let plan_id = worktree_plan_id(&plan.workspace_path, &plan.head);
     let completed_at = now_iso();
     let output = Command::new("git")
         .arg(format!("--git-dir={}", plan.common_git_directory))
@@ -2097,7 +2436,10 @@ fn execute_worktree_removal_with_options(
         let audit_result = append_audit(
             &mut audit_file,
             &json!({
-                "version": 1,
+                "version": AUDIT_VERSION,
+                "engine": ENGINE,
+                "engineVersion": ENGINE_VERSION,
+                "planId": plan_id,
                 "action": "worktree-removal-failed",
                 "completedAt": now_iso(),
                 "workspacePath": plan.workspace_path,
@@ -2116,7 +2458,10 @@ fn execute_worktree_removal_with_options(
     append_audit(
         &mut audit_file,
         &json!({
-            "version": 1,
+            "version": AUDIT_VERSION,
+            "engine": ENGINE,
+            "engineVersion": ENGINE_VERSION,
+            "planId": plan_id,
             "action": "worktree-removal",
             "completedAt": completed_at,
             "workspacePath": plan.workspace_path,
@@ -2131,6 +2476,9 @@ fn execute_worktree_removal_with_options(
     )?;
 
     Ok(WorktreeRemovalResult {
+        schema_version: SCHEMA_VERSION,
+        engine: ENGINE,
+        engine_version: ENGINE_VERSION,
         workspace_path: plan.workspace_path,
         reclaimed_bytes: plan.size_bytes,
         preserved_branch: plan.branch,
@@ -2163,8 +2511,13 @@ mod tests {
     use tempfile::TempDir;
 
     fn run(path: &Path, program: &str, args: &[&str]) {
+        // `git commit` otherwise detaches `git maintenance run --auto`, a real
+        // process inside the fixture that the native process check sees.
         let status = Command::new(program)
             .current_dir(path)
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "maintenance.auto")
+            .env("GIT_CONFIG_VALUE_0", "false")
             .args(args)
             .status()
             .expect("test command should run");
@@ -2249,8 +2602,294 @@ mod tests {
             .expect("write generated type file");
         fs::write(worktree.join("tsconfig.tsbuildinfo"), "generated\n")
             .expect("write generated build info");
+        // Remote evidence must be fresh relative to the clocks the tests
+        // inject (up to 120 days ahead); a future mtime counts as age 0.
+        run(&repository, "git", &["fetch", "origin"]);
+        set_modified_at(
+            &repository.join(".git/FETCH_HEAD"),
+            unix_now() + 120 * DAY_IN_SECONDS,
+        );
 
         (root, repository, worktree)
+    }
+
+    fn set_modified_at(path: &Path, unix_seconds: i64) {
+        let modified = UNIX_EPOCH + Duration::from_secs(unix_seconds as u64);
+        File::options()
+            .write(true)
+            .open(path)
+            .expect("open file for mtime")
+            .set_modified(modified)
+            .expect("set mtime");
+    }
+
+    fn unix_now() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_secs() as i64
+    }
+
+    fn merged_git_inspection() -> GitInspection {
+        GitInspection {
+            kind: WorkspaceKind::LinkedWorktree,
+            branch: Some("feature".to_owned()),
+            head: "abc123".to_owned(),
+            upstream: Some("origin/feature".to_owned()),
+            ahead: Some(0),
+            behind: Some(0),
+            dirty_entries: 0,
+            untracked_entries: 0,
+            remote_contains_head: true,
+            default_branch: Some("origin/main".to_owned()),
+            merged_into_default: Some(true),
+            last_commit_at: Some("2026-07-13T00:00:00.000Z".to_owned()),
+            last_activity_at: Some("2026-06-01T00:00:00.000Z".to_owned()),
+            remote_fetched_at: Some("2026-07-12T00:00:00.000Z".to_owned()),
+            remote_fetch_age_days: Some(1),
+            remote_verification: RemoteVerification::Skipped,
+        }
+    }
+
+    fn classification_now() -> i64 {
+        DateTime::parse_from_rfc3339("2026-07-13T00:00:00.000Z")
+            .expect("fixed clock")
+            .timestamp()
+    }
+
+    #[test]
+    fn stale_or_unknown_remote_evidence_downgrades_candidate_to_review() {
+        let now = classification_now();
+        assert_eq!(
+            classify_workspace(Some(&merged_git_inspection()), Some(0), 14, now).recommendation,
+            Recommendation::Candidate
+        );
+
+        let stale = GitInspection {
+            remote_fetch_age_days: Some(23),
+            ..merged_git_inspection()
+        };
+        let classification = classify_workspace(Some(&stale), Some(0), 14, now);
+        assert_eq!(classification.data_safety, DataSafety::Recoverable);
+        assert_eq!(classification.recommendation, Recommendation::Review);
+        assert_eq!(
+            classification.reasons,
+            vec!["remote state last fetched 23d ago; run git fetch to refresh".to_owned()]
+        );
+
+        let boundary = GitInspection {
+            remote_fetch_age_days: Some(7),
+            ..merged_git_inspection()
+        };
+        assert_eq!(
+            classify_workspace(Some(&boundary), Some(0), 14, now).recommendation,
+            Recommendation::Candidate
+        );
+
+        let unknown = GitInspection {
+            remote_fetched_at: None,
+            remote_fetch_age_days: None,
+            ..merged_git_inspection()
+        };
+        let classification = classify_workspace(Some(&unknown), Some(0), 14, now);
+        assert_eq!(classification.recommendation, Recommendation::Review);
+        assert_eq!(
+            classification.reasons,
+            vec!["remote fetch time is unknown; run git fetch to refresh".to_owned()]
+        );
+    }
+
+    #[test]
+    fn verified_live_check_stands_in_for_stale_fetch_but_mismatch_does_not() {
+        let now = classification_now();
+        let verified = GitInspection {
+            remote_fetched_at: None,
+            remote_fetch_age_days: None,
+            remote_verification: RemoteVerification::Verified,
+            ..merged_git_inspection()
+        };
+        assert_eq!(
+            classify_workspace(Some(&verified), Some(0), 14, now).recommendation,
+            Recommendation::Candidate
+        );
+        for remote_verification in [
+            RemoteVerification::Mismatch,
+            RemoteVerification::Unavailable,
+        ] {
+            let git = GitInspection {
+                remote_verification,
+                ..verified.clone()
+            };
+            assert_eq!(
+                classify_workspace(Some(&git), Some(0), 14, now).recommendation,
+                Recommendation::Review
+            );
+        }
+    }
+
+    #[test]
+    fn earlier_protect_and_keep_reasons_win_over_stale_remote_evidence() {
+        let now = classification_now();
+        let stale = GitInspection {
+            remote_fetch_age_days: Some(90),
+            ..merged_git_inspection()
+        };
+        let ahead = GitInspection {
+            ahead: Some(1),
+            ..stale.clone()
+        };
+        assert_eq!(
+            classify_workspace(Some(&ahead), Some(0), 14, now).recommendation,
+            Recommendation::Protect
+        );
+        let recent = GitInspection {
+            last_activity_at: Some("2026-07-12T00:00:00.000Z".to_owned()),
+            ..stale.clone()
+        };
+        assert_eq!(
+            classify_workspace(Some(&recent), Some(0), 14, now).recommendation,
+            Recommendation::Keep
+        );
+        let unmerged = GitInspection {
+            merged_into_default: Some(false),
+            ..stale
+        };
+        assert!(
+            classify_workspace(Some(&unmerged), Some(0), 14, now).reasons[0].contains("not merged")
+        );
+    }
+
+    #[test]
+    fn inspection_reads_fetch_age_from_fetch_head() {
+        let (_root, repository, worktree) = fixture_linked_worktree();
+        let now = unix_now();
+        let fetch_head = repository.join(".git/FETCH_HEAD");
+
+        set_modified_at(&fetch_head, now - 2 * DAY_IN_SECONDS);
+        let fresh = inspect_git_at(&worktree, now, false).expect("inspection");
+        assert_eq!(fresh.remote_fetch_age_days, Some(2));
+        assert!(fresh.remote_fetched_at.is_some());
+        assert_eq!(fresh.remote_verification, RemoteVerification::Skipped);
+
+        set_modified_at(&fetch_head, now - 23 * DAY_IN_SECONDS);
+        let stale = inspect_git_at(&worktree, now, false).expect("inspection");
+        assert_eq!(stale.remote_fetch_age_days, Some(23));
+        let stale = GitInspection {
+            last_activity_at: timestamp_iso(now - 30 * DAY_IN_SECONDS),
+            ..stale
+        };
+        let classification = classify_workspace(Some(&stale), Some(0), 14, now);
+        assert_eq!(classification.recommendation, Recommendation::Review);
+        assert_eq!(
+            classification.reasons,
+            vec!["remote state last fetched 23d ago; run git fetch to refresh".to_owned()]
+        );
+    }
+
+    #[test]
+    fn inspection_falls_back_to_tracking_refs_and_needs_a_remote() {
+        let (_root, repository, worktree) = fixture_linked_worktree();
+        let now = unix_now();
+        fs::remove_file(repository.join(".git/FETCH_HEAD")).expect("remove FETCH_HEAD");
+        let _ = fs::remove_file(repository.join(".git/worktrees/agent-worktree/FETCH_HEAD"));
+
+        let fallback = inspect_git_at(&worktree, now, false).expect("inspection");
+        assert_eq!(fallback.remote_fetch_age_days, Some(0));
+
+        run(&repository, "git", &["remote", "remove", "origin"]);
+        let without_remote = inspect_git_at(&worktree, now, false).expect("inspection");
+        assert_eq!(without_remote.remote_fetched_at, None);
+        assert_eq!(without_remote.remote_fetch_age_days, None);
+    }
+
+    #[test]
+    fn live_verification_runs_only_when_asked_and_compares_with_remote() {
+        let (root, _repository, worktree) = fixture_linked_worktree();
+        let now = unix_now();
+        run(&worktree, "git", &["push", "-u", "origin", "agent/old"]);
+
+        assert_eq!(
+            inspect_git_at(&worktree, now, false)
+                .expect("inspection")
+                .remote_verification,
+            RemoteVerification::Skipped
+        );
+        assert_eq!(
+            inspect_git_at(&worktree, now, true)
+                .expect("inspection")
+                .remote_verification,
+            RemoteVerification::Verified
+        );
+
+        let other = root.path().join("other");
+        run(
+            root.path(),
+            "git",
+            &[
+                "clone",
+                &root.path().join("remote.git").to_string_lossy(),
+                &other.to_string_lossy(),
+            ],
+        );
+        run(&other, "git", &["push", "origin", "--delete", "agent/old"]);
+        assert_eq!(
+            inspect_git_at(&worktree, now, true)
+                .expect("inspection")
+                .remote_verification,
+            RemoteVerification::Mismatch
+        );
+
+        run(
+            &worktree,
+            "git",
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                &root.path().join("missing.git").to_string_lossy(),
+            ],
+        );
+        assert_eq!(
+            inspect_git_at(&worktree, now, true)
+                .expect("inspection")
+                .remote_verification,
+            RemoteVerification::Unavailable
+        );
+    }
+
+    #[test]
+    fn default_removal_refuses_stale_fetch_evidence_and_force_warns() {
+        let (_root, repository, worktree) = fixture_linked_worktree();
+        let now_seconds = unix_now() + 120 * DAY_IN_SECONDS;
+        set_modified_at(
+            &repository.join(".git/FETCH_HEAD"),
+            now_seconds - 23 * DAY_IN_SECONDS,
+        );
+        let request = WorktreeRemovalRequest {
+            workspace_path: worktree.to_string_lossy().into_owned(),
+            minimum_inactive_days: 90,
+            force: false,
+            reviewed_head: None,
+            reviewed_warnings: None,
+            reviewed_ignored_fingerprint: None,
+            confirmation: None,
+        };
+
+        let error =
+            plan_worktree_removal_with_snapshot(&request, &inactive_processes(), now_seconds)
+                .expect_err("stale fetch evidence must block default removal");
+        assert!(error.contains("remote state last fetched 23d ago; run git fetch to refresh"));
+
+        let forced = WorktreeRemovalRequest {
+            force: true,
+            ..request
+        };
+        let plan = plan_worktree_removal_with_snapshot(&forced, &inactive_processes(), now_seconds)
+            .expect("force preview");
+        assert!(plan.warnings.contains(
+            &"Remote evidence may be outdated: remote state last fetched 23d ago; run git fetch to refresh."
+                .to_owned()
+        ));
     }
 
     fn inactive_processes() -> ActiveProcessSnapshot {
@@ -2258,6 +2897,8 @@ mod tests {
             available: true,
             working_directories: BTreeMap::new(),
             error: None,
+            method: Some(ProcessCheckMethod::Libproc),
+            coverage: Some(ProcessCheckCoverage::CurrentUser),
         }
     }
 
@@ -2573,9 +3214,34 @@ mod tests {
         assert!(repository.path().join("README.md").exists());
         assert!(repository.path().join(".git").exists());
         assert_eq!(result.removed.len(), 1);
-        assert!(fs::read_to_string(audit_path)
-            .expect("audit contents")
-            .contains("cache-cleanup"));
+        assert_eq!((result.schema_version, result.engine), (2, "native"));
+        let event: serde_json::Value = serde_json::from_str(
+            fs::read_to_string(audit_path)
+                .expect("audit contents")
+                .trim(),
+        )
+        .expect("audit record");
+        assert_eq!(event["action"], "cache-cleanup");
+        assert_eq!(event["version"], 2);
+        assert_eq!(event["engine"], "native");
+        assert_eq!(event["engineVersion"], ENGINE_VERSION);
+        assert_eq!(
+            event["planId"],
+            cache_plan_id(&plan.workspace_path, &["node_modules"])
+        );
+    }
+
+    // Same vectors as test/contracts.test.ts: both engines must agree.
+    #[test]
+    fn plan_ids_match_the_node_engine() {
+        assert_eq!(
+            cache_plan_id("/work/app", &["node_modules", "dist"]),
+            "2b652a38f84fb410"
+        );
+        assert_eq!(
+            worktree_plan_id("/work/app", "0123456789abcdef0123456789abcdef01234567"),
+            "d1c2e4bb11feb12b"
+        );
     }
 
     #[test]
@@ -2863,6 +3529,15 @@ mod tests {
         let event: serde_json::Value =
             serde_json::from_str(fs::read_to_string(audit).unwrap().trim()).unwrap();
         assert_eq!(event["force"], true);
+        assert_eq!(event["version"], 2);
+        assert_eq!(event["engine"], "native");
+        assert_eq!(
+            event["planId"],
+            worktree_plan_id(
+                &plan.workspace_path,
+                reviewed.reviewed_head.as_deref().unwrap()
+            )
+        );
         assert_eq!(
             event["warnings"].as_array().unwrap().len(),
             reviewed.reviewed_warnings.unwrap().len()
@@ -3025,6 +3700,48 @@ mod tests {
     }
 
     #[test]
+    fn worktree_removal_blocks_files_held_open_inside_it() {
+        let (_root, _repository, worktree) = fixture_linked_worktree();
+        let mut holder = Command::new("tail")
+            .arg("-f")
+            .arg(worktree.join("source.ts"))
+            .current_dir("/")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("start file holder");
+        let mut errors = Vec::new();
+        for force in [false, true] {
+            let request = WorktreeRemovalRequest {
+                workspace_path: worktree.to_string_lossy().into_owned(),
+                minimum_inactive_days: if force { 0 } else { 1 },
+                force,
+                reviewed_head: None,
+                reviewed_warnings: None,
+                reviewed_ignored_fingerprint: None,
+                confirmation: None,
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let error = loop {
+                match plan_worktree_removal_with_snapshot(&request, &inactive_processes(), 0) {
+                    Err(error) if error.contains("open file") => break error,
+                    other if std::time::Instant::now() > deadline => break format!("{other:?}"),
+                    _ => std::thread::sleep(std::time::Duration::from_millis(25)),
+                }
+            };
+            errors.push(error);
+        }
+        let _ = holder.kill();
+        let _ = holder.wait();
+        for error in errors {
+            assert!(
+                error.contains("1 open file inside this worktree"),
+                "{error}"
+            );
+        }
+        assert!(worktree.exists());
+    }
+
+    #[test]
     fn force_removal_revalidates_hidden_ignored_paths_and_contents() {
         for change in [
             "rename",
@@ -3163,6 +3880,9 @@ mod tests {
             merged_into_default: Some(false),
             last_commit_at: None,
             last_activity_at: None,
+            remote_fetched_at: None,
+            remote_fetch_age_days: None,
+            remote_verification: RemoteVerification::Skipped,
         };
 
         let classification = classify_workspace(Some(&git), Some(0), 14, 0);
@@ -3171,3 +3891,5 @@ mod tests {
         assert_eq!(classification.recommendation, Recommendation::Protect);
     }
 }
+
+pub(crate) mod conformance;

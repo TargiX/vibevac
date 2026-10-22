@@ -54,6 +54,9 @@ function workspace(
 
 function report(workspaces: WorkspaceReport[]): ScanReport {
   return {
+    schemaVersion: 2,
+    engine: "node",
+    engineVersion: "0.0.0-test",
     generatedAt: "2026-07-14T00:00:00.000Z",
     roots: [{ tool: "projects", path: "/workspace", maxDepth: 4 }],
     workspaces,
@@ -88,6 +91,9 @@ describe("post-cleanup report state", () => {
       retainedBytes: 400,
     });
     const cleanup: CacheCleanupResult = {
+      schemaVersion: 2,
+      engine: "node",
+      engineVersion: "0.0.0-test",
       workspacePath: cleaned.path,
       removed: [
         { relativePath: "node_modules", sizeBytes: 1_000 },

@@ -1,0 +1,73 @@
+{
+  "name": "target with Cargo.toml",
+  "description": "Positive control for the target rule: a tagged target next to a committed Cargo.toml is Cargo output.",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "write": {
+        "agent-worktree/Cargo.toml": "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n"
+      }
+    },
+    {
+      "git": [
+        "add",
+        "Cargo.toml"
+      ],
+      "cwd": "agent-worktree"
+    },
+    {
+      "git": [
+        "commit",
+        "-q",
+        "-m",
+        "Add Cargo manifest"
+      ],
+      "cwd": "agent-worktree"
+    },
+    {
+      "git": [
+        "push",
+        "-q",
+        "origin",
+        "HEAD:main"
+      ],
+      "cwd": "agent-worktree"
+    },
+    {
+      "write": {
+        "agent-worktree/target/CACHEDIR.TAG": "Signature: 8a477f597d28d172789f06886806bc55\n",
+        "agent-worktree/target/debug/fixture": "binary\n"
+      }
+    }
+  ],
+  "workspace": "agent-worktree",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "cleanupSelection": [
+    "target"
+  ],
+  "expected": {
+    "recommendation": "candidate",
+    "dataSafety": "recoverable",
+    "reasons": [
+      "clean, synced, merged into origin/main, and inactive for 31d"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": true,
+    "cacheCleanupReason": null,
+    "caches": [
+      "target"
+    ],
+    "cleanup": {
+      "ok": true,
+      "relativePaths": [
+        "target"
+      ]
+    }
+  }
+}

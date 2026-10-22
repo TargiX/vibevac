@@ -106,6 +106,25 @@ jobs:
           prerelease: true
           args: --target universal-apple-darwin
 
+      - name: Verify and smoke-test the notarized app
+        run: |
+          APP_PATH=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos \
+            -maxdepth 1 -type d -name '*.app' -print -quit)
+          test -n "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl --assess --type execute --verbose=2 "$APP_PATH"
+
+          SMOKE_DIR="$RUNNER_TEMP/vibevac-smoke"
+          bash scripts/create-smoke-fixture.sh "$SMOKE_DIR/root"
+          # `open` does not report the app's exit status, so the check reads
+          # the report the app must have written before quitting.
+          open -W -n \
+            --env VIBEVAC_SMOKE=1 \
+            --env "VIBEVAC_SMOKE_ROOT=$SMOKE_DIR/root" \
+            --env "VIBEVAC_SMOKE_OUT=$SMOKE_DIR/report.json" \
+            "$APP_PATH"
+          node scripts/check-smoke-report.mjs "$SMOKE_DIR/report.json" native
+
       - name: Notarize disk image
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
