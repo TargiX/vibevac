@@ -104,13 +104,17 @@ function processSnapshot(workingDirectories: string[] | null): ActiveProcessSnap
       available: false,
       workingDirectories: new Map(),
       error: "process check disabled by fixture",
+      method: null,
+      coverage: null,
     };
   }
   const counts = new Map<string, number>();
   for (const directory of workingDirectories) {
     counts.set(directory, (counts.get(directory) ?? 0) + 1);
   }
-  return { available: true, workingDirectories: counts, error: null };
+  // Injected by the fixture rather than read by any method; the fixture lists
+  // every process it means to exist, so coverage is all users.
+  return { available: true, workingDirectories: counts, error: null, method: null, coverage: "all-users" };
 }
 
 function errorMessage(error: unknown): string {

@@ -23,6 +23,8 @@ fn fixture_snapshot(working_directories: Option<&[String]>) -> ActiveProcessSnap
             available: false,
             working_directories: BTreeMap::new(),
             error: Some("process check disabled by fixture".to_owned()),
+            method: None,
+            coverage: None,
         };
     };
     let mut counts = BTreeMap::new();
@@ -33,6 +35,10 @@ fn fixture_snapshot(working_directories: Option<&[String]>) -> ActiveProcessSnap
         available: true,
         working_directories: counts,
         error: None,
+        // Injected by the fixture rather than read by any method; the fixture
+        // lists every process it means to exist, so coverage is all users.
+        method: None,
+        coverage: Some(ProcessCheckCoverage::AllUsers),
     }
 }
 

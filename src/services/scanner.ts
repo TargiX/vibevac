@@ -244,6 +244,8 @@ export async function scanWorkspaces(
     processCheckAvailable: processes.available,
     processCheckError: processes.error,
     timeouts,
+    processCheckMethod: processes.method,
+    processCheckCoverage: processes.coverage,
   };
 }
 

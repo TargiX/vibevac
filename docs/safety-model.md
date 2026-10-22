@@ -80,8 +80,24 @@ inspection failed. A removal command must refuse to touch it.
   an upstream the check is `skipped`.
 - Activity is the newest signal among the worktree directory, worktree Git
   index, and latest commit. It is evidence, not proof of human intent.
-- Process detection uses `lsof` and can only observe processes visible to the
-  current user. If it is unavailable, VibeVac produces no cleanup candidates.
+- Process detection reads the working directory of every running process the
+  current user may inspect. The desktop engine asks the kernel directly
+  (`libproc` on macOS, `/proc/<pid>/cwd` on Linux); the CLI reads `/proc` on
+  Linux and runs `lsof` on macOS. `lsof` is also the fallback when the native
+  call reads nothing, and it is stopped after 5 seconds. The scan reports the
+  method used and its coverage, for example "libproc, current user only".
+- Coverage is the current user's processes unless VibeVac runs as root. Another
+  account's build, editor or agent working in a shared checkout is not seen,
+  and a process that only holds files open without its working directory inside
+  the workspace is not seen by this check. If no method works, VibeVac produces
+  no cleanup candidates.
+- In the desktop engine, whole-worktree removal adds an open-file check while
+  the removal is planned and again right before it runs, never during a scan.
+  It counts open file descriptors, including directories, under the worktree
+  across the same processes; VibeVac's own handles are ignored. Any open file blocks removal,
+  with or without the explicit override. The check is limited to 2 seconds;
+  running out of time blocks a normal removal and becomes a reviewed warning
+  under the override. Cache cleanup does not run this check.
 - An IDE can keep a project conceptually open without using a process cwd inside
   it. This is why every candidate still requires a human decision.
 

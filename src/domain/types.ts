@@ -103,6 +103,9 @@ export interface CommandTimeout {
   seconds: number;
 }
 
+export type ProcessCheckMethod = "libproc" | "procfs" | "lsof";
+export type ProcessCheckCoverage = "all-users" | "current-user";
+
 export interface ScanReport extends ContractHeader {
   generatedAt: string;
   roots: DiscoveryRoot[];
@@ -118,6 +121,10 @@ export interface ScanReport extends ContractHeader {
   // Subprocess calls that hit their time limit, at most 25. The native engine
   // does not bound its subprocesses yet and omits the field.
   timeouts?: CommandTimeout[];
+  /** How running processes were read; null when no method worked. */
+  processCheckMethod?: ProcessCheckMethod | null;
+  /** Whose processes were visible to that method. */
+  processCheckCoverage?: ProcessCheckCoverage | null;
 }
 
 export interface CacheCleanupPlan extends ContractHeader {
