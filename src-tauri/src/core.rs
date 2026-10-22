@@ -1,3 +1,7 @@
+use crate::active_processes::{
+    count_processes_within, inspect_active_processes, open_files_within, ActiveProcessSnapshot,
+    ProcessCheckCoverage, ProcessCheckMethod,
+};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -152,6 +156,8 @@ pub(crate) struct ScanReport {
     stale_after_days: u64,
     process_check_available: bool,
     process_check_error: Option<String>,
+    process_check_method: Option<ProcessCheckMethod>,
+    process_check_coverage: Option<ProcessCheckCoverage>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -267,13 +273,6 @@ pub(crate) struct WorktreeRemovalResult {
     reconstruction_command: String,
     completed_at: String,
     audit_path: String,
-}
-
-#[derive(Clone, Debug)]
-struct ActiveProcessSnapshot {
-    available: bool,
-    working_directories: BTreeMap<PathBuf, u64>,
-    error: Option<String>,
 }
 
 // A familiar name is not enough for ecosystem caches whose names are also
@@ -496,48 +495,6 @@ fn inspect_git(workspace_path: &Path) -> Result<GitInspection, String> {
         merged_into_default,
         last_commit_at: commit_seconds.and_then(timestamp_iso),
         last_activity_at: last_activity_seconds.and_then(timestamp_iso),
-    })
-}
-
-fn inspect_active_processes() -> ActiveProcessSnapshot {
-    match Command::new("lsof")
-        .args(["-a", "-d", "cwd", "-Fpn"])
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            let mut working_directories = BTreeMap::new();
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                if let Some(path) = line.strip_prefix('n').filter(|value| !value.is_empty()) {
-                    *working_directories.entry(PathBuf::from(path)).or_insert(0) += 1;
-                }
-            }
-            ActiveProcessSnapshot {
-                available: true,
-                working_directories,
-                error: None,
-            }
-        }
-        Ok(output) => ActiveProcessSnapshot {
-            available: false,
-            working_directories: BTreeMap::new(),
-            error: Some(command_error("lsof", &output)),
-        },
-        Err(error) => ActiveProcessSnapshot {
-            available: false,
-            working_directories: BTreeMap::new(),
-            error: Some(format!("Could not run lsof: {error}")),
-        },
-    }
-}
-
-fn count_processes_within(snapshot: &ActiveProcessSnapshot, workspace_path: &Path) -> Option<u64> {
-    snapshot.available.then(|| {
-        snapshot
-            .working_directories
-            .iter()
-            .filter(|(working_directory, _)| working_directory.starts_with(workspace_path))
-            .map(|(_, count)| count)
-            .sum()
     })
 }
 
@@ -1512,6 +1469,8 @@ pub(crate) fn scan_workspaces(
         stale_after_days,
         process_check_available: processes.available,
         process_check_error: processes.error,
+        process_check_method: processes.method,
+        process_check_coverage: processes.coverage,
     })
 }
 
@@ -1794,6 +1753,17 @@ fn plan_worktree_removal_with_snapshot(
         );
     }
     check_nested_git(&workspace_path)?;
+    let open_file_error = match open_files_within(&workspace_path) {
+        Ok(0) => None,
+        Ok(count) => {
+            return Err(format!(
+                "Worktree removal blocked: {count} open file{} inside this worktree",
+                if count == 1 { "" } else { "s" }
+            ))
+        }
+        Err(error) if request.force => Some(error),
+        Err(error) => return Err(format!("Worktree removal blocked: {error}")),
+    };
 
     let active_process_count = count_processes_within(processes, &workspace_path);
     let classification = classify_workspace(
@@ -1855,6 +1825,11 @@ fn plan_worktree_removal_with_snapshot(
             "{count} running processes use this worktree and may break. They will not be stopped."
         )),
         _ => {}
+    }
+    if let Some(error) = open_file_error {
+        warnings.push(format!(
+            "Open-file inspection failed ({error}); files in use may be lost."
+        ));
     }
     if request.minimum_inactive_days > 0
         && inactive_days.is_none_or(|age| age < request.minimum_inactive_days)
@@ -2163,8 +2138,13 @@ mod tests {
     use tempfile::TempDir;
 
     fn run(path: &Path, program: &str, args: &[&str]) {
+        // `git commit` otherwise detaches `git maintenance run --auto`, a real
+        // process inside the fixture that the native process check sees.
         let status = Command::new(program)
             .current_dir(path)
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "maintenance.auto")
+            .env("GIT_CONFIG_VALUE_0", "false")
             .args(args)
             .status()
             .expect("test command should run");
@@ -2258,6 +2238,8 @@ mod tests {
             available: true,
             working_directories: BTreeMap::new(),
             error: None,
+            method: Some(ProcessCheckMethod::Libproc),
+            coverage: Some(ProcessCheckCoverage::CurrentUser),
         }
     }
 
@@ -3022,6 +3004,48 @@ mod tests {
                 assert!(!audit.exists());
             }
         }
+    }
+
+    #[test]
+    fn worktree_removal_blocks_files_held_open_inside_it() {
+        let (_root, _repository, worktree) = fixture_linked_worktree();
+        let mut holder = Command::new("tail")
+            .arg("-f")
+            .arg(worktree.join("source.ts"))
+            .current_dir("/")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("start file holder");
+        let mut errors = Vec::new();
+        for force in [false, true] {
+            let request = WorktreeRemovalRequest {
+                workspace_path: worktree.to_string_lossy().into_owned(),
+                minimum_inactive_days: if force { 0 } else { 1 },
+                force,
+                reviewed_head: None,
+                reviewed_warnings: None,
+                reviewed_ignored_fingerprint: None,
+                confirmation: None,
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let error = loop {
+                match plan_worktree_removal_with_snapshot(&request, &inactive_processes(), 0) {
+                    Err(error) if error.contains("open file") => break error,
+                    other if std::time::Instant::now() > deadline => break format!("{other:?}"),
+                    _ => std::thread::sleep(std::time::Duration::from_millis(25)),
+                }
+            };
+            errors.push(error);
+        }
+        let _ = holder.kill();
+        let _ = holder.wait();
+        for error in errors {
+            assert!(
+                error.contains("1 open file inside this worktree"),
+                "{error}"
+            );
+        }
+        assert!(worktree.exists());
     }
 
     #[test]
