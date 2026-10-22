@@ -8,10 +8,12 @@ use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DAY_IN_SECONDS: i64 = 86_400;
+const REMOTE_FETCH_MAX_AGE_DAYS: u64 = 7;
+const REMOTE_VERIFY_TIMEOUT: Duration = Duration::from_secs(15);
 const CACHE_MAX_DEPTH: u8 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -50,6 +52,15 @@ enum Recommendation {
     Keep,
     Review,
     Protect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum RemoteVerification {
+    Verified,
+    Mismatch,
+    Unavailable,
+    Skipped,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -107,6 +118,9 @@ struct GitInspection {
     merged_into_default: Option<bool>,
     last_commit_at: Option<String>,
     last_activity_at: Option<String>,
+    remote_fetched_at: Option<String>,
+    remote_fetch_age_days: Option<u64>,
+    remote_verification: RemoteVerification,
 }
 
 #[derive(Clone, Debug)]
@@ -393,6 +407,190 @@ fn parse_ahead_behind(output: Option<String>) -> (Option<u64>, Option<u64>) {
     }
 }
 
+fn remote_name_for(upstream: Option<&str>) -> &str {
+    upstream
+        .and_then(|value| value.split('/').next())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("origin")
+}
+
+fn newest_modified_within(directory: &Path, depth: u8) -> Option<i64> {
+    if depth > 32 {
+        return None;
+    }
+    fs::read_dir(directory)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_dir() {
+                newest_modified_within(&entry.path(), depth + 1)
+            } else if file_type.is_file() {
+                modified_seconds(&entry.path())
+            } else {
+                None
+            }
+        })
+        .max()
+}
+
+fn absolute_git_path(workspace_path: &Path, args: &[&str]) -> Option<PathBuf> {
+    try_git(workspace_path, args)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                workspace_path.join(path)
+            }
+        })
+}
+
+// Remote freshness evidence: when this clone last heard from its remote.
+// FETCH_HEAD is per worktree, so both the shared and the worktree copy count.
+// Without one, the newest remote-tracking ref (loose or packed) stands in.
+fn remote_fetched_seconds(workspace_path: &Path, remote: &str) -> Option<i64> {
+    let remotes = try_git(workspace_path, &["remote"])?;
+    if !remotes.lines().any(|name| name.trim() == remote) {
+        return None;
+    }
+    let common_directory = absolute_git_path(
+        workspace_path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let worktree_fetch_head = absolute_git_path(
+        workspace_path,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "FETCH_HEAD",
+        ],
+    );
+    let fetch_head = [
+        modified_seconds(&common_directory.join("FETCH_HEAD")),
+        worktree_fetch_head.as_deref().and_then(modified_seconds),
+    ]
+    .into_iter()
+    .flatten()
+    .max();
+    if fetch_head.is_some() {
+        return fetch_head;
+    }
+
+    let packed_refs_path = common_directory.join("packed-refs");
+    let packed_refs = fs::read_to_string(&packed_refs_path).unwrap_or_default();
+    [
+        newest_modified_within(&common_directory.join("refs/remotes").join(remote), 0),
+        if packed_refs.contains(&format!(" refs/remotes/{remote}/")) {
+            modified_seconds(&packed_refs_path)
+        } else {
+            None
+        },
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+}
+
+fn age_in_days(timestamp_seconds: i64, now_seconds: i64) -> u64 {
+    ((now_seconds - timestamp_seconds).max(0) / DAY_IN_SECONDS) as u64
+}
+
+// The only network call VibeVac makes, and only on explicit request: ask the
+// remote for the upstream branch and compare it with the local tracking ref.
+fn verify_upstream_with_remote(
+    workspace_path: &Path,
+    upstream: Option<&str>,
+) -> RemoteVerification {
+    let Some((remote, branch)) = upstream.and_then(|value| value.split_once('/')) else {
+        return RemoteVerification::Skipped;
+    };
+    if remote.is_empty() {
+        return RemoteVerification::Skipped;
+    }
+    let branch_ref = format!("refs/heads/{branch}");
+    let tracking_ref = format!("refs/remotes/{remote}/{branch}");
+    let Some(local_head) = try_git(
+        workspace_path,
+        &["rev-parse", "--verify", "--quiet", &tracking_ref],
+    )
+    .filter(|value| !value.is_empty()) else {
+        return RemoteVerification::Skipped;
+    };
+
+    let Ok(mut child) = Command::new("git")
+        .arg("-C")
+        .arg(workspace_path)
+        .args(["ls-remote", "--exit-code", "--heads", remote, &branch_ref])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return RemoteVerification::Unavailable;
+    };
+    let deadline = Instant::now() + REMOTE_VERIFY_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return RemoteVerification::Unavailable;
+            }
+        }
+    };
+    // Exit code 2: the remote answered and the branch no longer exists there.
+    if status.code() == Some(2) {
+        return RemoteVerification::Mismatch;
+    }
+    if !status.success() {
+        return RemoteVerification::Unavailable;
+    }
+    let mut stdout = String::new();
+    if child
+        .stdout
+        .take()
+        .is_none_or(|mut pipe| pipe.read_to_string(&mut stdout).is_err())
+    {
+        return RemoteVerification::Unavailable;
+    }
+    let remote_head = stdout.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let sha = fields.next()?;
+        (fields.next()? == branch_ref).then_some(sha)
+    });
+    if remote_head == Some(local_head.as_str()) {
+        RemoteVerification::Verified
+    } else {
+        RemoteVerification::Mismatch
+    }
+}
+
+// Inspection against an explicit clock, optionally with the live remote check.
+fn inspect_git_at(
+    workspace_path: &Path,
+    now_seconds: i64,
+    verify_remote: bool,
+) -> Result<GitInspection, String> {
+    let mut git = inspect_git(workspace_path)?;
+    git.remote_fetch_age_days = git
+        .remote_fetched_at
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|timestamp| age_in_days(timestamp.timestamp(), now_seconds));
+    if verify_remote {
+        git.remote_verification =
+            verify_upstream_with_remote(workspace_path, git.upstream.as_deref());
+    }
+    Ok(git)
+}
+
 fn inspect_git(workspace_path: &Path) -> Result<GitInspection, String> {
     run_git(workspace_path, &["rev-parse", "--is-inside-work-tree"])?;
 
@@ -451,6 +649,8 @@ fn inspect_git(workspace_path: &Path) -> Result<GitInspection, String> {
     let commit_seconds = try_git(workspace_path, &["log", "-1", "--format=%ct"])
         .and_then(|value| value.parse::<i64>().ok());
     let default_branch = resolve_default_branch(workspace_path, upstream.as_deref());
+    let fetched_seconds =
+        remote_fetched_seconds(workspace_path, remote_name_for(upstream.as_deref()));
     let merged_into_default = default_branch.as_deref().map(|branch_name| {
         git_succeeds(
             workspace_path,
@@ -496,6 +696,10 @@ fn inspect_git(workspace_path: &Path) -> Result<GitInspection, String> {
         merged_into_default,
         last_commit_at: commit_seconds.and_then(timestamp_iso),
         last_activity_at: last_activity_seconds.and_then(timestamp_iso),
+        remote_fetched_at: fetched_seconds.and_then(timestamp_iso),
+        remote_fetch_age_days: fetched_seconds
+            .map(|seconds| age_in_days(seconds, Utc::now().timestamp())),
+        remote_verification: RemoteVerification::Skipped,
     })
 }
 
@@ -1196,6 +1400,27 @@ fn inventory_rebuildable_caches(workspace_path: &Path) -> Result<Vec<CacheEntry>
     Ok(caches)
 }
 
+// A passed live check is current evidence; a mismatch or an unreachable remote
+// never upgrades the local fetch age.
+fn remote_evidence_age_days(git: &GitInspection) -> Option<u64> {
+    if git.remote_verification == RemoteVerification::Verified {
+        Some(0)
+    } else {
+        git.remote_fetch_age_days
+    }
+}
+
+fn remote_evidence_is_fresh(git: &GitInspection) -> bool {
+    remote_evidence_age_days(git).is_some_and(|days| days <= REMOTE_FETCH_MAX_AGE_DAYS)
+}
+
+fn stale_remote_evidence_reason(git: &GitInspection) -> String {
+    match remote_evidence_age_days(git) {
+        Some(days) => format!("remote state last fetched {days}d ago; run git fetch to refresh"),
+        None => "remote fetch time is unknown; run git fetch to refresh".to_owned(),
+    }
+}
+
 fn classify_workspace(
     git: Option<&GitInspection>,
     active_process_count: Option<u64>,
@@ -1327,6 +1552,13 @@ fn classify_workspace(
             reasons: vec!["last workspace activity is unknown".to_owned()],
         };
     };
+    if !remote_evidence_is_fresh(git) {
+        return Classification {
+            data_safety: DataSafety::Recoverable,
+            recommendation: Recommendation::Review,
+            reasons: vec![stale_remote_evidence_reason(git)],
+        };
+    }
     Classification {
         data_safety: DataSafety::Recoverable,
         recommendation: Recommendation::Candidate,
@@ -1344,8 +1576,10 @@ fn scan_candidate(
     processes: &ActiveProcessSnapshot,
     stale_after_days: u64,
     now_seconds: i64,
+    verify_remote: bool,
 ) -> WorkspaceReport {
-    let (git, inspection_error) = match inspect_git(&candidate.path) {
+    let (git, inspection_error) = match inspect_git_at(&candidate.path, now_seconds, verify_remote)
+    {
         Ok(git) => (Some(git), None),
         Err(error) => (None, Some(error)),
     };
@@ -1458,6 +1692,7 @@ fn exclude_nested_workspace_sizes(workspaces: &mut [WorkspaceReport]) {
 pub(crate) fn scan_workspaces(
     stale_after_days: u64,
     custom_roots: Vec<String>,
+    verify_remote: bool,
 ) -> Result<ScanReport, String> {
     let stale_after_days = stale_after_days.clamp(1, 365);
     let roots = discovery_roots(custom_roots)?;
@@ -1469,7 +1704,15 @@ pub(crate) fn scan_workspaces(
         .as_secs() as i64;
     let mut workspaces: Vec<WorkspaceReport> = candidates
         .par_iter()
-        .map(|candidate| scan_candidate(candidate, &processes, stale_after_days, now_seconds))
+        .map(|candidate| {
+            scan_candidate(
+                candidate,
+                &processes,
+                stale_after_days,
+                now_seconds,
+                verify_remote,
+            )
+        })
         .collect();
     exclude_nested_workspace_sizes(&mut workspaces);
     workspaces.sort_by(|left, right| {
@@ -1771,7 +2014,7 @@ fn plan_worktree_removal_with_snapshot(
 
     let workspace_path = fs::canonicalize(&request.workspace_path)
         .map_err(|error| format!("Could not resolve workspace path: {error}"))?;
-    let git = inspect_git(&workspace_path)?;
+    let git = inspect_git_at(&workspace_path, now_seconds, false)?;
     if git.kind != WorkspaceKind::LinkedWorktree {
         return Err("Only registered linked Git worktrees can be removed".to_owned());
     }
@@ -1821,6 +2064,12 @@ fn plan_worktree_removal_with_snapshot(
     {
         return Err("Worktree removal proof is incomplete".to_owned());
     }
+    if !request.force && !remote_evidence_is_fresh(&git) {
+        return Err(format!(
+            "Worktree removal blocked: {}",
+            stale_remote_evidence_reason(&git)
+        ));
+    }
     let inactive_days = last_activity_at
         .as_ref()
         .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
@@ -1847,6 +2096,12 @@ fn plan_worktree_removal_with_snapshot(
     }
     if git.merged_into_default != Some(true) {
         warnings.push("Current commit is not proven merged into the default branch.".to_owned());
+    }
+    if !remote_evidence_is_fresh(&git) {
+        warnings.push(format!(
+            "Remote evidence may be outdated: {}.",
+            stale_remote_evidence_reason(&git)
+        ));
     }
     match active_process_count {
         None => warnings
@@ -2249,8 +2504,294 @@ mod tests {
             .expect("write generated type file");
         fs::write(worktree.join("tsconfig.tsbuildinfo"), "generated\n")
             .expect("write generated build info");
+        // Remote evidence must be fresh relative to the clocks the tests
+        // inject (up to 120 days ahead); a future mtime counts as age 0.
+        run(&repository, "git", &["fetch", "origin"]);
+        set_modified_at(
+            &repository.join(".git/FETCH_HEAD"),
+            unix_now() + 120 * DAY_IN_SECONDS,
+        );
 
         (root, repository, worktree)
+    }
+
+    fn set_modified_at(path: &Path, unix_seconds: i64) {
+        let modified = UNIX_EPOCH + Duration::from_secs(unix_seconds as u64);
+        File::options()
+            .write(true)
+            .open(path)
+            .expect("open file for mtime")
+            .set_modified(modified)
+            .expect("set mtime");
+    }
+
+    fn unix_now() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_secs() as i64
+    }
+
+    fn merged_git_inspection() -> GitInspection {
+        GitInspection {
+            kind: WorkspaceKind::LinkedWorktree,
+            branch: Some("feature".to_owned()),
+            head: "abc123".to_owned(),
+            upstream: Some("origin/feature".to_owned()),
+            ahead: Some(0),
+            behind: Some(0),
+            dirty_entries: 0,
+            untracked_entries: 0,
+            remote_contains_head: true,
+            default_branch: Some("origin/main".to_owned()),
+            merged_into_default: Some(true),
+            last_commit_at: Some("2026-07-13T00:00:00.000Z".to_owned()),
+            last_activity_at: Some("2026-06-01T00:00:00.000Z".to_owned()),
+            remote_fetched_at: Some("2026-07-12T00:00:00.000Z".to_owned()),
+            remote_fetch_age_days: Some(1),
+            remote_verification: RemoteVerification::Skipped,
+        }
+    }
+
+    fn classification_now() -> i64 {
+        DateTime::parse_from_rfc3339("2026-07-13T00:00:00.000Z")
+            .expect("fixed clock")
+            .timestamp()
+    }
+
+    #[test]
+    fn stale_or_unknown_remote_evidence_downgrades_candidate_to_review() {
+        let now = classification_now();
+        assert_eq!(
+            classify_workspace(Some(&merged_git_inspection()), Some(0), 14, now).recommendation,
+            Recommendation::Candidate
+        );
+
+        let stale = GitInspection {
+            remote_fetch_age_days: Some(23),
+            ..merged_git_inspection()
+        };
+        let classification = classify_workspace(Some(&stale), Some(0), 14, now);
+        assert_eq!(classification.data_safety, DataSafety::Recoverable);
+        assert_eq!(classification.recommendation, Recommendation::Review);
+        assert_eq!(
+            classification.reasons,
+            vec!["remote state last fetched 23d ago; run git fetch to refresh".to_owned()]
+        );
+
+        let boundary = GitInspection {
+            remote_fetch_age_days: Some(7),
+            ..merged_git_inspection()
+        };
+        assert_eq!(
+            classify_workspace(Some(&boundary), Some(0), 14, now).recommendation,
+            Recommendation::Candidate
+        );
+
+        let unknown = GitInspection {
+            remote_fetched_at: None,
+            remote_fetch_age_days: None,
+            ..merged_git_inspection()
+        };
+        let classification = classify_workspace(Some(&unknown), Some(0), 14, now);
+        assert_eq!(classification.recommendation, Recommendation::Review);
+        assert_eq!(
+            classification.reasons,
+            vec!["remote fetch time is unknown; run git fetch to refresh".to_owned()]
+        );
+    }
+
+    #[test]
+    fn verified_live_check_stands_in_for_stale_fetch_but_mismatch_does_not() {
+        let now = classification_now();
+        let verified = GitInspection {
+            remote_fetched_at: None,
+            remote_fetch_age_days: None,
+            remote_verification: RemoteVerification::Verified,
+            ..merged_git_inspection()
+        };
+        assert_eq!(
+            classify_workspace(Some(&verified), Some(0), 14, now).recommendation,
+            Recommendation::Candidate
+        );
+        for remote_verification in [
+            RemoteVerification::Mismatch,
+            RemoteVerification::Unavailable,
+        ] {
+            let git = GitInspection {
+                remote_verification,
+                ..verified.clone()
+            };
+            assert_eq!(
+                classify_workspace(Some(&git), Some(0), 14, now).recommendation,
+                Recommendation::Review
+            );
+        }
+    }
+
+    #[test]
+    fn earlier_protect_and_keep_reasons_win_over_stale_remote_evidence() {
+        let now = classification_now();
+        let stale = GitInspection {
+            remote_fetch_age_days: Some(90),
+            ..merged_git_inspection()
+        };
+        let ahead = GitInspection {
+            ahead: Some(1),
+            ..stale.clone()
+        };
+        assert_eq!(
+            classify_workspace(Some(&ahead), Some(0), 14, now).recommendation,
+            Recommendation::Protect
+        );
+        let recent = GitInspection {
+            last_activity_at: Some("2026-07-12T00:00:00.000Z".to_owned()),
+            ..stale.clone()
+        };
+        assert_eq!(
+            classify_workspace(Some(&recent), Some(0), 14, now).recommendation,
+            Recommendation::Keep
+        );
+        let unmerged = GitInspection {
+            merged_into_default: Some(false),
+            ..stale
+        };
+        assert!(
+            classify_workspace(Some(&unmerged), Some(0), 14, now).reasons[0].contains("not merged")
+        );
+    }
+
+    #[test]
+    fn inspection_reads_fetch_age_from_fetch_head() {
+        let (_root, repository, worktree) = fixture_linked_worktree();
+        let now = unix_now();
+        let fetch_head = repository.join(".git/FETCH_HEAD");
+
+        set_modified_at(&fetch_head, now - 2 * DAY_IN_SECONDS);
+        let fresh = inspect_git_at(&worktree, now, false).expect("inspection");
+        assert_eq!(fresh.remote_fetch_age_days, Some(2));
+        assert!(fresh.remote_fetched_at.is_some());
+        assert_eq!(fresh.remote_verification, RemoteVerification::Skipped);
+
+        set_modified_at(&fetch_head, now - 23 * DAY_IN_SECONDS);
+        let stale = inspect_git_at(&worktree, now, false).expect("inspection");
+        assert_eq!(stale.remote_fetch_age_days, Some(23));
+        let stale = GitInspection {
+            last_activity_at: timestamp_iso(now - 30 * DAY_IN_SECONDS),
+            ..stale
+        };
+        let classification = classify_workspace(Some(&stale), Some(0), 14, now);
+        assert_eq!(classification.recommendation, Recommendation::Review);
+        assert_eq!(
+            classification.reasons,
+            vec!["remote state last fetched 23d ago; run git fetch to refresh".to_owned()]
+        );
+    }
+
+    #[test]
+    fn inspection_falls_back_to_tracking_refs_and_needs_a_remote() {
+        let (_root, repository, worktree) = fixture_linked_worktree();
+        let now = unix_now();
+        fs::remove_file(repository.join(".git/FETCH_HEAD")).expect("remove FETCH_HEAD");
+        let _ = fs::remove_file(repository.join(".git/worktrees/agent-worktree/FETCH_HEAD"));
+
+        let fallback = inspect_git_at(&worktree, now, false).expect("inspection");
+        assert_eq!(fallback.remote_fetch_age_days, Some(0));
+
+        run(&repository, "git", &["remote", "remove", "origin"]);
+        let without_remote = inspect_git_at(&worktree, now, false).expect("inspection");
+        assert_eq!(without_remote.remote_fetched_at, None);
+        assert_eq!(without_remote.remote_fetch_age_days, None);
+    }
+
+    #[test]
+    fn live_verification_runs_only_when_asked_and_compares_with_remote() {
+        let (root, _repository, worktree) = fixture_linked_worktree();
+        let now = unix_now();
+        run(&worktree, "git", &["push", "-u", "origin", "agent/old"]);
+
+        assert_eq!(
+            inspect_git_at(&worktree, now, false)
+                .expect("inspection")
+                .remote_verification,
+            RemoteVerification::Skipped
+        );
+        assert_eq!(
+            inspect_git_at(&worktree, now, true)
+                .expect("inspection")
+                .remote_verification,
+            RemoteVerification::Verified
+        );
+
+        let other = root.path().join("other");
+        run(
+            root.path(),
+            "git",
+            &[
+                "clone",
+                &root.path().join("remote.git").to_string_lossy(),
+                &other.to_string_lossy(),
+            ],
+        );
+        run(&other, "git", &["push", "origin", "--delete", "agent/old"]);
+        assert_eq!(
+            inspect_git_at(&worktree, now, true)
+                .expect("inspection")
+                .remote_verification,
+            RemoteVerification::Mismatch
+        );
+
+        run(
+            &worktree,
+            "git",
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                &root.path().join("missing.git").to_string_lossy(),
+            ],
+        );
+        assert_eq!(
+            inspect_git_at(&worktree, now, true)
+                .expect("inspection")
+                .remote_verification,
+            RemoteVerification::Unavailable
+        );
+    }
+
+    #[test]
+    fn default_removal_refuses_stale_fetch_evidence_and_force_warns() {
+        let (_root, repository, worktree) = fixture_linked_worktree();
+        let now_seconds = unix_now() + 120 * DAY_IN_SECONDS;
+        set_modified_at(
+            &repository.join(".git/FETCH_HEAD"),
+            now_seconds - 23 * DAY_IN_SECONDS,
+        );
+        let request = WorktreeRemovalRequest {
+            workspace_path: worktree.to_string_lossy().into_owned(),
+            minimum_inactive_days: 90,
+            force: false,
+            reviewed_head: None,
+            reviewed_warnings: None,
+            reviewed_ignored_fingerprint: None,
+            confirmation: None,
+        };
+
+        let error =
+            plan_worktree_removal_with_snapshot(&request, &inactive_processes(), now_seconds)
+                .expect_err("stale fetch evidence must block default removal");
+        assert!(error.contains("remote state last fetched 23d ago; run git fetch to refresh"));
+
+        let forced = WorktreeRemovalRequest {
+            force: true,
+            ..request
+        };
+        let plan = plan_worktree_removal_with_snapshot(&forced, &inactive_processes(), now_seconds)
+            .expect("force preview");
+        assert!(plan.warnings.contains(
+            &"Remote evidence may be outdated: remote state last fetched 23d ago; run git fetch to refresh."
+                .to_owned()
+        ));
     }
 
     fn inactive_processes() -> ActiveProcessSnapshot {
@@ -3163,6 +3704,9 @@ mod tests {
             merged_into_default: Some(false),
             last_commit_at: None,
             last_activity_at: None,
+            remote_fetched_at: None,
+            remote_fetch_age_days: None,
+            remote_verification: RemoteVerification::Skipped,
         };
 
         let classification = classify_workspace(Some(&git), Some(0), 14, 0);
