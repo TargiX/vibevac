@@ -1,0 +1,44 @@
+{
+  "name": "symlinked node_modules",
+  "description": "node_modules is a symlink to a directory outside the worktree; following it would delete someone else's data, so it is not inventoried.",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "write": {
+        "shared/node_modules/pkg/index.js": "module.exports = 1;\n"
+      }
+    },
+    {
+      "symlink": {
+        "path": "agent-worktree/node_modules",
+        "target": "../shared/node_modules"
+      }
+    }
+  ],
+  "workspace": "agent-worktree",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "cleanupSelection": [
+    "node_modules"
+  ],
+  "expected": {
+    "recommendation": "candidate",
+    "dataSafety": "recoverable",
+    "reasons": [
+      "clean, synced, merged into origin/main, and inactive for 31d"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": false,
+    "cacheCleanupReason": "no verified rebuildable caches found",
+    "caches": [],
+    "cleanup": {
+      "ok": false,
+      "error": "Cleanup refused: node_modules is not in the verified rebuildable cache inventory"
+    }
+  }
+}

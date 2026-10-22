@@ -1,0 +1,43 @@
+{
+  "name": "target without Cargo.toml",
+  "description": "A directory named target with a Cargo cache tag but no Cargo.toml next to it is not proven to be Cargo output, so it is not inventoried. node_modules is the positive control.",
+  "base": "merged-linked-worktree",
+  "steps": [
+    {
+      "write": {
+        "agent-worktree/node_modules/pkg/index.js": "module.exports = 1;\n",
+        "agent-worktree/target/CACHEDIR.TAG": "Signature: 8a477f597d28d172789f06886806bc55\n",
+        "agent-worktree/target/.rustc_info.json": "{}\n",
+        "agent-worktree/target/release/report.pdf": "not rebuildable\n"
+      }
+    }
+  ],
+  "workspace": "agent-worktree",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "cleanupSelection": [
+    "target"
+  ],
+  "expected": {
+    "recommendation": "candidate",
+    "dataSafety": "recoverable",
+    "reasons": [
+      "clean, synced, merged into origin/main, and inactive for 31d"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": true,
+    "cacheCleanupReason": null,
+    "caches": [
+      "node_modules"
+    ],
+    "cleanup": {
+      "ok": false,
+      "error": "Cleanup refused: target is not in the verified rebuildable cache inventory"
+    }
+  }
+}

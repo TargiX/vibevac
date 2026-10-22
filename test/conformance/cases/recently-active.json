@@ -1,0 +1,26 @@
+{
+  "name": "recently active merged worktree",
+  "description": "Workspace activity (directory and index mtime) three days before the clock keeps a merged worktree, even though its last commit is old.",
+  "base": "merged-linked-worktree",
+  "steps": [],
+  "workspace": "agent-worktree",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "activityAt": "2026-01-29T00:00:00.000Z",
+  "expected": {
+    "recommendation": "keep",
+    "dataSafety": "recoverable",
+    "reasons": [
+      "merged workspace was active 3d ago"
+    ],
+    "git": {
+      "kind": "linked-worktree",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": false,
+    "cacheCleanupReason": "no verified rebuildable caches found",
+    "caches": []
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "standalone repository",
+  "description": "A primary checkout owns the Git database; deleting it would delete history, so it is always protected.",
+  "base": "merged-linked-worktree",
+  "steps": [],
+  "workspace": "repository",
+  "processes": [],
+  "now": "2026-02-01T00:00:00.000Z",
+  "staleAfterDays": 14,
+  "expected": {
+    "recommendation": "protect",
+    "dataSafety": "unknown",
+    "reasons": [
+      "standalone repository; removal would delete its Git database"
+    ],
+    "git": {
+      "kind": "standalone-repository",
+      "dirtyEntries": 0,
+      "mergedIntoDefault": true
+    },
+    "cacheCleanupAllowed": false,
+    "cacheCleanupReason": "no verified rebuildable caches found",
+    "caches": []
+  }
+}
