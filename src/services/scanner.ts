@@ -229,5 +229,7 @@ export async function scanWorkspaces(
     staleAfterDays,
     processCheckAvailable: processes.available,
     processCheckError: processes.error,
+    processCheckMethod: processes.method,
+    processCheckCoverage: processes.coverage,
   };
 }

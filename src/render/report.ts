@@ -154,6 +154,17 @@ function bar(value: number, max: number, width: number): string {
 
 // The default scan output: one figure worth sharing, where it comes from, and
 // what to do next. `renderHumanReport` keeps the full evidence table.
+export function describeProcessCheck(report: ScanReport): string | null {
+  if (!report.processCheckMethod) return null;
+  const coverage =
+    report.processCheckCoverage === "all-users"
+      ? "all users"
+      : report.processCheckCoverage === "current-user"
+        ? "current user only"
+        : "coverage unknown";
+  return `Process check: ${report.processCheckMethod}, ${coverage}`;
+}
+
 export function renderScanSummary(report: ScanReport, now = Date.now()): string {
   const sizeSkipped =
     report.workspaces.length > 0 &&
@@ -246,10 +257,12 @@ export function renderScanSummary(report: ScanReport, now = Date.now()): string 
   }
   if (!report.processCheckAvailable) {
     lines.push(
-      pc.yellow("  The active-process check is unavailable (lsof), so cleanup stays blocked."),
+      pc.yellow("  The active-process check is unavailable, so cleanup stays blocked."),
     );
   }
-  if (heldBack.length > 0 || !report.processCheckAvailable) lines.push("");
+  const processCheck = describeProcessCheck(report);
+  if (processCheck) lines.push(pc.dim(`  ${processCheck}.`));
+  if (heldBack.length > 0 || !report.processCheckAvailable || processCheck) lines.push("");
 
   const example = ready[0] ? compactPath(ready[0].path) : "<workspace>";
   lines.push(

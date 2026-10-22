@@ -191,6 +191,24 @@ describe("report formatting", () => {
     expect(output).toContain("active-process check is unavailable");
   });
 
+  it("names the process check method and coverage in the footer", () => {
+    const report = scanReport([
+      workspace("/work/app", [cache("node_modules", "Installed dependencies", GB)]),
+    ]);
+
+    expect(
+      renderScanSummary({
+        ...report,
+        processCheckMethod: "libproc",
+        processCheckCoverage: "current-user",
+      }),
+    ).toContain("Process check: libproc, current user only.");
+    expect(
+      renderScanSummary({ ...report, processCheckMethod: "procfs", processCheckCoverage: "all-users" }),
+    ).toContain("Process check: procfs, all users.");
+    expect(renderScanSummary(report)).not.toContain("Process check:");
+  });
+
   it("suggests a root when no workspaces were found", () => {
     expect(renderScanSummary(scanReport([]))).toContain("vibevac --root");
   });

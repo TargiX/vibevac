@@ -19,6 +19,8 @@ const noActiveProcesses: ActiveProcessSnapshot = {
   available: true,
   workingDirectories: new Map(),
   error: null,
+  method: "lsof",
+  coverage: "current-user",
 };
 
 afterEach(async () => {
@@ -49,7 +51,7 @@ describe("cache cleanup", () => {
     const alias = resolve(root, "alias");
     await symlink(root, alias);
     await expect(planCacheCleanup(alias, ["node_modules"], {
-      processSnapshot: {available:true,workingDirectories:new Map([[root,1]]),error:null},
+      processSnapshot: {available:true,workingDirectories:new Map([[root,1]]),error:null,method:"lsof",coverage:"current-user"},
     })).rejects.toThrow("running process");
     await expect(access(resolve(root,"node_modules"))).resolves.toBeUndefined();
   });
@@ -106,6 +108,8 @@ describe("cache cleanup", () => {
       available: true,
       workingDirectories: new Map([[root, 1]]),
       error: null,
+      method: "lsof",
+      coverage: "current-user",
     };
 
     await expect(

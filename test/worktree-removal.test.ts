@@ -18,6 +18,8 @@ const inactiveProcesses: ActiveProcessSnapshot = {
   available: true,
   workingDirectories: new Map(),
   error: null,
+  method: "lsof",
+  coverage: "current-user",
 };
 
 afterEach(async () => {

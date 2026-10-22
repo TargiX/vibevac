@@ -82,6 +82,9 @@ export interface WorkspaceReport extends WorkspaceCandidate, Classification {
   cacheInspectionError: string | null;
 }
 
+export type ProcessCheckMethod = "libproc" | "procfs" | "lsof";
+export type ProcessCheckCoverage = "all-users" | "current-user";
+
 export interface ScanReport {
   generatedAt: string;
   roots: DiscoveryRoot[];
@@ -94,6 +97,10 @@ export interface ScanReport {
   staleAfterDays: number;
   processCheckAvailable: boolean;
   processCheckError: string | null;
+  /** How running processes were read; null when no method worked. */
+  processCheckMethod?: ProcessCheckMethod | null;
+  /** Whose processes were visible to that method. */
+  processCheckCoverage?: ProcessCheckCoverage | null;
 }
 
 export interface CacheCleanupPlan {
