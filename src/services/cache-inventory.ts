@@ -1,12 +1,9 @@
-import { execFile } from "node:child_process";
 import { access, lstat, readFile, readdir } from "node:fs/promises";
 import { basename, dirname, relative, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 
 import type { CacheEntry, CacheKind } from "../domain/types.js";
 import { diskUsageBytes } from "./disk-usage.js";
-
-const execFileAsync = promisify(execFile);
+import { runCommand } from "./run-command.js";
 
 // A familiar name is not enough for ecosystem caches whose names are also
 // common words (`target`, `venv`, `.build`). Each of those must be proven to
@@ -257,8 +254,8 @@ async function containsProtectedContent(path: string): Promise<boolean> {
 
 async function containsTrackedFiles(workspacePath: string, relativePath: string): Promise<boolean> {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", workspacePath, "ls-files", "--", relativePath], {
-      encoding: "utf8", maxBuffer: 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    const { stdout } = await runCommand("git", ["-C", workspacePath, "ls-files", "--", relativePath], {
+      timeoutMs: 5_000, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
     });
     return stdout.length > 0;
   } catch { return true; }
@@ -351,11 +348,12 @@ async function isIgnoredByGit(
   relativePath: string,
 ): Promise<boolean> {
   try {
-    await execFileAsync(
+    await runCommand(
       "git",
       ["-C", workspacePath, "check-ignore", "--quiet", "--", relativePath],
       {
-        encoding: "utf8",
+        timeoutMs: 5_000,
+        maxBuffer: 1024 * 1024,
         env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
       },
     );

@@ -1,15 +1,12 @@
-import { execFile } from "node:child_process";
 import { lstat, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import { promisify } from "node:util";
 
 import type { GitInspection } from "../domain/types.js";
-
-const execFileAsync = promisify(execFile);
+import { isCommandTimeout, runCommand } from "./run-command.js";
 
 async function runGit(workspacePath: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", workspacePath, ...args], {
-    encoding: "utf8",
+  const { stdout } = await runCommand("git", ["-C", workspacePath, ...args], {
+    timeoutMs: 5_000,
     maxBuffer: 10 * 1024 * 1024,
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
   });
@@ -73,6 +70,7 @@ async function mergedInto(
     ) {
       return false;
     }
+    if (isCommandTimeout(error)) throw error;
     return null;
   }
 }
@@ -101,10 +99,13 @@ async function lastActivityAt(
     : null;
 }
 
+// An optional fact that is merely absent reads as null. A timed out one fails
+// the whole inspection, so a hung volume can only make a workspace protected.
 async function tryGit(workspacePath: string, args: string[]): Promise<string | null> {
   try {
     return await runGit(workspacePath, args);
-  } catch {
+  } catch (error) {
+    if (isCommandTimeout(error)) throw error;
     return null;
   }
 }

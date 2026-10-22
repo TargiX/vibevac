@@ -82,6 +82,12 @@ export interface WorkspaceReport extends WorkspaceCandidate, Classification {
   cacheInspectionError: string | null;
 }
 
+export interface CommandTimeout {
+  workspacePath: string;
+  command: string;
+  seconds: number;
+}
+
 export interface ScanReport {
   generatedAt: string;
   roots: DiscoveryRoot[];
@@ -94,6 +100,9 @@ export interface ScanReport {
   staleAfterDays: number;
   processCheckAvailable: boolean;
   processCheckError: string | null;
+  // Subprocess calls that hit their time limit, at most 25. The native engine
+  // does not bound its subprocesses yet and omits the field.
+  timeouts?: CommandTimeout[];
 }
 
 export interface CacheCleanupPlan {

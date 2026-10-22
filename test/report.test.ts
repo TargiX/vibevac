@@ -191,6 +191,16 @@ describe("report formatting", () => {
     expect(output).toContain("active-process check is unavailable");
   });
 
+  it("prints a one-line timeout count only when calls timed out", () => {
+    const report = scanReport([workspace("/work/app", [cache("node_modules", "Installed dependencies", GB)])]);
+    expect(renderScanSummary(report)).not.toContain("timed out");
+    const output = renderScanSummary({
+      ...report,
+      timeouts: [{ workspacePath: "/work/app", command: "git status --porcelain=v1 -z", seconds: 5 }],
+    });
+    expect(output).toContain("1 Git or du call timed out");
+  });
+
   it("suggests a root when no workspaces were found", () => {
     expect(renderScanSummary(scanReport([]))).toContain("vibevac --root");
   });

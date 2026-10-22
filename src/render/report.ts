@@ -138,6 +138,9 @@ export function renderHumanReport(report: ScanReport): string {
   if (!report.processCheckAvailable && report.processCheckError) {
     lines.push(pc.yellow("Process check unavailable; VibeVac will not produce cleanup candidates."));
   }
+  for (const timeout of report.timeouts ?? []) {
+    lines.push(pc.yellow(`Timed out after ${timeout.seconds}s: ${timeout.command} (${timeout.workspacePath})`));
+  }
   return lines.join("\n");
 }
 
@@ -249,7 +252,14 @@ export function renderScanSummary(report: ScanReport, now = Date.now()): string 
       pc.yellow("  The active-process check is unavailable (lsof), so cleanup stays blocked."),
     );
   }
-  if (heldBack.length > 0 || !report.processCheckAvailable) lines.push("");
+  const timeouts = report.timeouts ?? [];
+  if (timeouts.length > 0) {
+    const count = `${timeouts.length}${timeouts.length >= 25 ? "+" : ""}`;
+    lines.push(
+      pc.yellow(`  ${count} Git or du ${timeouts.length === 1 ? "call" : "calls"} timed out and counted as failed checks (see --details).`),
+    );
+  }
+  if (heldBack.length > 0 || !report.processCheckAvailable || timeouts.length > 0) lines.push("");
 
   const example = ready[0] ? compactPath(ready[0].path) : "<workspace>";
   lines.push(
