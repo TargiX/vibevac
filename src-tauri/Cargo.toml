@@ -4,6 +4,7 @@ version = "0.2.0"
 description = "Keep the work. Vacuum rebuildable weight from AI coding workspaces."
 authors = ["Ilya Moskovkin"]
 edition = "2021"
+default-run = "vibevac"
 
 [lib]
 name = "vibevac_lib"

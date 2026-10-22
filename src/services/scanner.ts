@@ -21,6 +21,10 @@ interface ScanOptions {
   concurrency?: number;
   staleAfterDays?: number;
   onProgress?: (progress: { completed: number; total: number }) => void;
+  // Fixture mode: inject the process snapshot and clock instead of running
+  // lsof and reading Date.now(), so a scan is reproducible.
+  processSnapshot?: ActiveProcessSnapshot;
+  now?: number;
 }
 
 function errorMessage(error: unknown): string {
@@ -159,11 +163,11 @@ export async function scanWorkspaces(
   roots: DiscoveryRoot[],
   options: ScanOptions = {},
 ): Promise<ScanReport> {
-  const now = Date.now();
+  const now = options.now ?? Date.now();
   const staleAfterDays = options.staleAfterDays ?? 14;
   const [candidates, processes] = await Promise.all([
     discoverWorkspaces(roots),
-    inspectActiveProcesses(),
+    options.processSnapshot ?? inspectActiveProcesses(),
   ]);
   let completed = 0;
   options.onProgress?.({ completed, total: candidates.length });
@@ -230,4 +234,19 @@ export async function scanWorkspaces(
     processCheckAvailable: processes.available,
     processCheckError: processes.error,
   };
+}
+
+// Scans one known workspace path without discovery. The conformance suite
+// uses it to compare this engine with src-tauri/src/core.rs on the same fixture.
+export async function scanWorkspacePath(
+  workspacePath: string,
+  options: ScanOptions = {},
+): Promise<WorkspaceReport> {
+  return scanCandidate(
+    { tool: "custom", path: workspacePath, sourcePath: workspacePath },
+    options.includeSize ?? true,
+    options.processSnapshot ?? (await inspectActiveProcesses()),
+    options.staleAfterDays ?? 14,
+    options.now ?? Date.now(),
+  );
 }
