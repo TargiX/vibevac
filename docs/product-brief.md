@@ -122,3 +122,8 @@ Git history. Standalone repositories are never removal targets.
 3. `0.3`: optional archive-before-removal workflows and richer reconstruction
    history.
 4. Later: signed Windows/Linux desktop packages and optional automatic updates.
+
+Worktree selection shows its estimated total immediately in the heading, list
+controls, and a fixed bottom review bar. The bar stays visible while scrolling,
+updates when rows are toggled, and states that the total covers entire checkouts.
+The fresh review reports the estimated total of accepted plans only.

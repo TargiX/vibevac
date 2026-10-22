@@ -23,6 +23,7 @@ import {
   X,
 } from "@lucide/vue";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import WorktreeSelectionDock from "./components/WorktreeSelectionDock.vue";
 
 import {
   chooseWorkspaceSource,
@@ -773,6 +774,8 @@ async function reviewWorktreeSelection(): Promise<void> {
   if (
     workspaces.length === 0 ||
     minimumInactiveDays === null ||
+    !scanPresentation.value.reportInteractive ||
+    removingWorktrees.value ||
     previewingWorktrees.value
   ) {
     return;
@@ -1042,7 +1045,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'has-worktree-selection': cleanupScope === 'worktree' && selectedWorktreeWorkspaces.length > 0 }">
     <header class="topbar" :class="{ condensed: report && !heroVisible }">
       <div class="brand">
         <img class="brand-mark" src="/vibevac-icon.png" alt="" />
@@ -1288,7 +1291,7 @@ onUnmounted(() => {
         <div class="hero-body">
           <div class="hero-figure">
             <span class="hero-eyebrow">
-              {{ cleanupScope === "worktree" ? "Worktree removal" : "Ready to reclaim" }} ·
+              {{ cleanupScope === "worktree" ? (selectedWorktreeWorkspaces.length ? "Estimated space to free" : "Worktree removal") : "Ready to reclaim" }} ·
               {{ forceWorktreeRemoval ? `Manual override · ${currentCleanupLevel.shortLabel}` : currentCleanupLevel.label }}
             </span>
             <h2 class="hero-number">
@@ -1513,6 +1516,9 @@ onUnmounted(() => {
               <input v-model="search" type="search" placeholder="Search workspace or branch" />
             </label>
             <div class="list-toolbar-status">
+              <strong v-if="cleanupScope === 'worktree' && selectedWorktreeWorkspaces.length" class="selection-toolbar-total" aria-live="polite">
+                Estimated to free: {{ formatBytes(selectedWorktreeBytes) }}
+              </strong>
               <span v-if="filter === 'ready'">
                 <template v-if="cleanupScope === 'worktree'">
                   {{ filteredWorkspaces.length }} eligible · {{ selectedWorktreeWorkspaces.length }}
@@ -1884,6 +1890,17 @@ onUnmounted(() => {
       </div>
     </main>
 
+    <WorktreeSelectionDock
+      v-if="cleanupScope === 'worktree' && selectedWorktreeWorkspaces.length"
+      :selected-count="selectedWorktreeWorkspaces.length"
+      :estimated-total="formatBytes(selectedWorktreeBytes)"
+      :report-interactive="scanPresentation.reportInteractive"
+      :preparing="previewingWorktrees"
+      :removing="removingWorktrees"
+      @clear="clearWorktreeSelection"
+      @review="reviewWorktreeSelection"
+    />
+
     <div v-if="cleanupPlans.length" class="modal-backdrop" @click.self="closeCleanup">
       <section
         class="cleanup-modal"
@@ -2101,7 +2118,7 @@ onUnmounted(() => {
             <strong>{{ worktreePlans.length }}</strong>
           </div>
           <div>
-            <span>Selected storage</span>
+            <span>Estimated space to free</span>
             <strong>{{ formatBytes(worktreePlanBytes) }}</strong>
           </div>
           <div>
