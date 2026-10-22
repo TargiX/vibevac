@@ -66,6 +66,11 @@ export interface ConformanceCase {
   workspace: string;
   /** mtime applied to the workspace directory and its Git index. Defaults to commitDate. */
   activityAt?: string;
+  /**
+   * mtime applied to every FETCH_HEAD a `git fetch` step wrote (the remote
+   * freshness evidence). Defaults to `now`, i.e. "fetched today".
+   */
+  fetchedAt?: string;
   /** Working directories of running processes, relative to the root. null = check unavailable. */
   processes: string[] | null;
   now: string;
@@ -165,6 +170,51 @@ async function pinActivity(workspacePath: string, activityAt: string): Promise<v
   await utimes(workspacePath, time, time);
 }
 
+// Missing files are fine: not every fixture fetched or has remote refs.
+async function pinTime(path: string, time: Date): Promise<void> {
+  await utimes(path, time, time).catch(() => undefined);
+}
+
+async function pinTreeTimes(directory: string, time: Date): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) await pinTreeTimes(path, time);
+    else await pinTime(path, time);
+  }
+}
+
+// Remote freshness evidence is the newest FETCH_HEAD (shared or per worktree),
+// or without one the newest remote-tracking ref. Git writes both with the real
+// clock, which is months after the fake one, so a push alone would look like a
+// fetch "in the future" and pass the 7-day rule by accident. Pin FETCH_HEAD to
+// fetchedAt and the remote-tracking refs to the commit date.
+async function pinRemoteEvidence(
+  workspacePath: string,
+  fetchedAt: string,
+  refsAt: string,
+): Promise<void> {
+  const gitPath = async (args: string[]) =>
+    (
+      await execFileAsync("git", ["-C", workspacePath, "rev-parse", "--path-format=absolute", ...args], {
+        encoding: "utf8",
+        env: { ...process.env, ...ISOLATED_GIT_ENV, GIT_OPTIONAL_LOCKS: "0" },
+      })
+    ).stdout.trim();
+  const commonDirectory = await gitPath(["--git-common-dir"]);
+  const fetchTime = new Date(fetchedAt);
+  await pinTime(resolve(commonDirectory, "FETCH_HEAD"), fetchTime);
+  await pinTime(await gitPath(["--git-path", "FETCH_HEAD"]), fetchTime);
+  const refsTime = new Date(refsAt);
+  await pinTreeTimes(resolve(commonDirectory, "refs", "remotes"), refsTime);
+  await pinTime(resolve(commonDirectory, "packed-refs"), refsTime);
+}
+
 /** Materialises a case into a fresh temporary directory. */
 export async function buildFixture(testCase: ConformanceCase): Promise<BuiltFixture> {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "vibevac-conformance-")));
@@ -179,6 +229,7 @@ export async function buildFixture(testCase: ConformanceCase): Promise<BuiltFixt
 
   const workspacePath = inside(root, testCase.workspace);
   await pinActivity(workspacePath, testCase.activityAt ?? commitDate);
+  await pinRemoteEvidence(workspacePath, testCase.fetchedAt ?? testCase.now, commitDate);
 
   return {
     root,

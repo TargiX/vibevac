@@ -1,5 +1,5 @@
 {
-  "description": "A repository pushed to a bare origin, plus a clean linked worktree `agent-worktree` on branch agent/old that tracks origin/main and adds nothing to it.",
+  "description": "A repository pushed to a bare origin, plus a clean linked worktree `agent-worktree` on branch agent/old that tracks origin/main and adds nothing to it, then fetches from inside the worktree so FETCH_HEAD exists as remote freshness evidence.",
   "steps": [
     {
       "git": [
@@ -80,6 +80,14 @@
         "--set-upstream-to",
         "origin/main",
         "agent/old"
+      ],
+      "cwd": "agent-worktree"
+    },
+    {
+      "git": [
+        "fetch",
+        "-q",
+        "origin"
       ],
       "cwd": "agent-worktree"
     }

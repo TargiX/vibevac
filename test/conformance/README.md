@@ -24,7 +24,8 @@ Every bug fix in either engine adds a case here before the fix.
 
 1. Add `cases/<name>.json`. `base` names a file in `bases/` whose steps run
    first; `merged-linked-worktree` gives a pushed `repository`, a bare
-   `remote.git` and a clean `agent-worktree` that tracks `origin/main`.
+   `remote.git` and a clean `agent-worktree` that tracks `origin/main` and
+   has fetched once from inside the worktree.
 2. `steps` run in order: `write` (path to contents), `mkdir`, `symlink`, and
    `git` (arguments, optional `cwd`, optional `at` date). `{root}` in a Git
    argument is the fixture root. Commits use a fixed author and
@@ -33,6 +34,10 @@ Every bug fix in either engine adds a case here before the fix.
    `commitDate`). `now` is the fake clock. `processes` lists working
    directories of running processes relative to the root; `null` means the
    process check is unavailable.
+   `fetchedAt` pins every `FETCH_HEAD` a fetch step wrote (default `now`,
+   "fetched today"); remote-tracking refs are pinned to `commitDate`. Git
+   writes both with the real clock, which would otherwise look like a fetch
+   in the future of the fake clock and pass the 7-day freshness rule.
 4. Write `expected` from the rules, not from running an engine.
 5. If an engine disagrees and it is not a safety bug, add a
    `knownDivergences` entry with the engine's actual value and a reason. The
