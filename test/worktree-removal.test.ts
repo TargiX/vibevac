@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -67,13 +67,17 @@ async function fixtureWorktree(): Promise<{
   await writeFile(resolve(worktree, "node_modules", "pkg", "index.js"), "cache\n");
   await writeFile(resolve(worktree, "next-env.d.ts"), "generated\n");
   await writeFile(resolve(worktree, "tsconfig.tsbuildinfo"), "generated\n");
+  // Remote evidence must be fresh relative to the injected clock.
+  const now = Date.now() + 120 * 86_400_000;
+  await git(repository, ["fetch", "origin"]);
+  await utimes(resolve(repository, ".git", "FETCH_HEAD"), new Date(now), new Date(now));
 
   return {
     root,
     repository,
     worktree,
     auditPath,
-    now: Date.now() + 120 * 86_400_000,
+    now,
   };
 }
 
@@ -279,5 +283,24 @@ describe("worktree removal", () => {
     }
     await expect(planWorktreeRemoval(request, options)).rejects.toThrow("inspection limit");
     await expect(access(resolve(fixture.repository, "source.ts"))).resolves.toBeUndefined();
+  });
+
+  it("refuses default removal on stale fetch evidence and warns about it under force", async () => {
+    const fixture = await fixtureWorktree();
+    const fetchedAt = new Date(fixture.now - 23 * 86_400_000);
+    await utimes(resolve(fixture.repository, ".git", "FETCH_HEAD"), fetchedAt, fetchedAt);
+    const options = { processSnapshot: inactiveProcesses, now: fixture.now };
+
+    await expect(
+      planWorktreeRemoval({ workspacePath: fixture.worktree, minimumInactiveDays: 90 }, options),
+    ).rejects.toThrow("remote state last fetched 23d ago; run git fetch to refresh");
+
+    const plan = await planWorktreeRemoval(
+      { workspacePath: fixture.worktree, minimumInactiveDays: 90, force: true },
+      options,
+    );
+    expect(plan.warnings).toContain(
+      "Remote evidence may be outdated: remote state last fetched 23d ago; run git fetch to refresh.",
+    );
   });
 });

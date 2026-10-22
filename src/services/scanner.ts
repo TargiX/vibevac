@@ -20,6 +20,7 @@ interface ScanOptions {
   includeSize?: boolean;
   concurrency?: number;
   staleAfterDays?: number;
+  verifyRemote?: boolean;
   onProgress?: (progress: { completed: number; total: number }) => void;
 }
 
@@ -101,9 +102,10 @@ async function scanCandidate(
   processes: ActiveProcessSnapshot,
   staleAfterDays: number,
   now: number,
+  verifyRemote = false,
 ): Promise<WorkspaceReport> {
   const [gitResult, sizeResult, cacheResult] = await Promise.allSettled([
-    inspectGit(candidate.path),
+    inspectGit(candidate.path, { now, verifyRemote }),
     includeSize ? diskUsageBytes(candidate.path) : Promise.resolve(null),
     includeSize ? inventoryRebuildableCaches(candidate.path) : Promise.resolve([]),
   ]);
@@ -177,6 +179,7 @@ export async function scanWorkspaces(
         processes,
         staleAfterDays,
         now,
+        options.verifyRemote === true,
       );
       completed += 1;
       options.onProgress?.({ completed, total: candidates.length });

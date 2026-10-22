@@ -150,12 +150,16 @@ describe("report formatting", () => {
         mergedIntoDefault: true,
         lastCommitAt: "2026-06-01T00:00:00.000Z",
         lastActivityAt: "2026-06-01T00:00:00.000Z",
+        remoteFetchedAt: "2026-06-01T00:00:00.000Z",
+        remoteFetchAgeDays: 23,
+        remoteVerification: "skipped",
       },
     };
 
     const output = renderWorkspaceInspection(workspace, 14);
 
     expect(output).toContain("CANDIDATE means");
+    expect(output).toContain("Remote freshness: remote last fetched 23d ago");
     expect(output).toContain("cannot know whether the project still matters");
     expect(output).toContain("will not delete or modify");
   });
