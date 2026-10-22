@@ -1,0 +1,288 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/AuditRecord",
+  "definitions": {
+    "AuditRecord": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/CacheCleanupAuditRecord"
+        },
+        {
+          "$ref": "#/definitions/CacheCleanupPartialAuditRecord"
+        },
+        {
+          "$ref": "#/definitions/WorktreeRemovalAuditRecord"
+        },
+        {
+          "$ref": "#/definitions/WorktreeRemovalFailedAuditRecord"
+        }
+      ]
+    },
+    "CacheCleanupAuditRecord": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 2
+        },
+        "engine": {
+          "$ref": "#/definitions/Engine"
+        },
+        "engineVersion": {
+          "type": "string"
+        },
+        "planId": {
+          "type": "string"
+        },
+        "completedAt": {
+          "type": "string"
+        },
+        "workspacePath": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string",
+          "const": "cache-cleanup"
+        },
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "relativePath": {
+                "type": "string"
+              },
+              "sizeBytes": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "relativePath",
+              "sizeBytes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "reclaimedBytes": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "action",
+        "completedAt",
+        "engine",
+        "engineVersion",
+        "planId",
+        "reclaimedBytes",
+        "removed",
+        "version",
+        "workspacePath"
+      ],
+      "additionalProperties": false
+    },
+    "Engine": {
+      "type": "string",
+      "enum": [
+        "node",
+        "native"
+      ]
+    },
+    "CacheCleanupPartialAuditRecord": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 2
+        },
+        "engine": {
+          "$ref": "#/definitions/Engine"
+        },
+        "engineVersion": {
+          "type": "string"
+        },
+        "planId": {
+          "type": "string"
+        },
+        "completedAt": {
+          "type": "string"
+        },
+        "workspacePath": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string",
+          "const": "cache-cleanup-partial"
+        },
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "relativePath": {
+                "type": "string"
+              },
+              "sizeBytes": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "relativePath",
+              "sizeBytes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "completedAt",
+        "engine",
+        "engineVersion",
+        "error",
+        "planId",
+        "removed",
+        "version",
+        "workspacePath"
+      ],
+      "additionalProperties": false
+    },
+    "WorktreeRemovalAuditRecord": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 2
+        },
+        "engine": {
+          "$ref": "#/definitions/Engine"
+        },
+        "engineVersion": {
+          "type": "string"
+        },
+        "planId": {
+          "type": "string"
+        },
+        "completedAt": {
+          "type": "string"
+        },
+        "workspacePath": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string",
+          "const": "worktree-removal"
+        },
+        "reclaimedBytes": {
+          "type": "number"
+        },
+        "preservedBranch": {
+          "type": "string"
+        },
+        "force": {
+          "type": "boolean"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "head": {
+          "type": "string"
+        },
+        "upstream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reconstructionCommand": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "completedAt",
+        "engine",
+        "engineVersion",
+        "force",
+        "head",
+        "planId",
+        "preservedBranch",
+        "reclaimedBytes",
+        "reconstructionCommand",
+        "upstream",
+        "version",
+        "warnings",
+        "workspacePath"
+      ],
+      "additionalProperties": false
+    },
+    "WorktreeRemovalFailedAuditRecord": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 2
+        },
+        "engine": {
+          "$ref": "#/definitions/Engine"
+        },
+        "engineVersion": {
+          "type": "string"
+        },
+        "planId": {
+          "type": "string"
+        },
+        "completedAt": {
+          "type": "string"
+        },
+        "workspacePath": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string",
+          "const": "worktree-removal-failed"
+        },
+        "preservedBranch": {
+          "type": "string"
+        },
+        "force": {
+          "type": "boolean"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "completedAt",
+        "engine",
+        "engineVersion",
+        "error",
+        "force",
+        "planId",
+        "preservedBranch",
+        "version",
+        "warnings",
+        "workspacePath"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

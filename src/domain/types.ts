@@ -82,7 +82,23 @@ export interface WorkspaceReport extends WorkspaceCandidate, Classification {
   cacheInspectionError: string | null;
 }
 
-export interface ScanReport {
+export type Engine = "node" | "native";
+
+// Every JSON surface VibeVac promises to keep stable carries this header, so a
+// consumer can tell which engine wrote it and which shape to expect.
+export interface ContractHeader {
+  schemaVersion: 2;
+  engine: Engine;
+  engineVersion: string;
+}
+
+export interface CommandTimeout {
+  workspacePath: string;
+  command: string;
+  seconds: number;
+}
+
+export interface ScanReport extends ContractHeader {
   generatedAt: string;
   roots: DiscoveryRoot[];
   workspaces: WorkspaceReport[];
@@ -94,16 +110,19 @@ export interface ScanReport {
   staleAfterDays: number;
   processCheckAvailable: boolean;
   processCheckError: string | null;
+  // Subprocess calls that hit their time limit, at most 25. The native engine
+  // does not bound its subprocesses yet and omits the field.
+  timeouts?: CommandTimeout[];
 }
 
-export interface CacheCleanupPlan {
+export interface CacheCleanupPlan extends ContractHeader {
   workspacePath: string;
   caches: CacheEntry[];
   reclaimBytes: number;
   confirmation: string;
 }
 
-export interface CacheCleanupResult {
+export interface CacheCleanupResult extends ContractHeader {
   workspacePath: string;
   removed: Array<{
     relativePath: string;
@@ -114,7 +133,7 @@ export interface CacheCleanupResult {
   auditPath: string;
 }
 
-export interface WorktreeRemovalPlan {
+export interface WorktreeRemovalPlan extends ContractHeader {
   force: boolean;
   warnings: string[];
   ignoredFingerprint: string;
@@ -131,7 +150,7 @@ export interface WorktreeRemovalPlan {
   confirmation: string;
 }
 
-export interface WorktreeRemovalResult {
+export interface WorktreeRemovalResult extends ContractHeader {
   workspacePath: string;
   reclaimedBytes: number;
   preservedBranch: string;
@@ -139,6 +158,55 @@ export interface WorktreeRemovalResult {
   completedAt: string;
   auditPath: string;
 }
+
+interface AuditRecordBase {
+  version: 2;
+  engine: Engine;
+  engineVersion: string;
+  // First 16 hex characters of SHA-256 over the revalidated plan identity,
+  // so a partial or failed record can be matched to the plan it executed.
+  planId: string;
+  completedAt: string;
+  workspacePath: string;
+}
+
+export interface CacheCleanupAuditRecord extends AuditRecordBase {
+  action: "cache-cleanup";
+  removed: CacheCleanupResult["removed"];
+  reclaimedBytes: number;
+}
+
+export interface CacheCleanupPartialAuditRecord extends AuditRecordBase {
+  action: "cache-cleanup-partial";
+  removed: CacheCleanupResult["removed"];
+  error: string;
+}
+
+export interface WorktreeRemovalAuditRecord extends AuditRecordBase {
+  action: "worktree-removal";
+  reclaimedBytes: number;
+  preservedBranch: string;
+  force: boolean;
+  warnings: string[];
+  head: string;
+  upstream: string | null;
+  reconstructionCommand: string;
+}
+
+export interface WorktreeRemovalFailedAuditRecord extends AuditRecordBase {
+  action: "worktree-removal-failed";
+  preservedBranch: string;
+  force: boolean;
+  warnings: string[];
+  error: string;
+}
+
+// One line of ~/.vibevac/audit.jsonl.
+export type AuditRecord =
+  | CacheCleanupAuditRecord
+  | CacheCleanupPartialAuditRecord
+  | WorktreeRemovalAuditRecord
+  | WorktreeRemovalFailedAuditRecord;
 
 export interface PreviewSkip {
   workspacePath: string;

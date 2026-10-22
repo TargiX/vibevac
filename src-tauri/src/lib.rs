@@ -56,8 +56,31 @@ async fn remove_worktree(request: WorktreeRemovalRequest) -> Result<WorktreeRemo
         .map_err(|error| format!("Native worktree removal task failed: {error}"))?
 }
 
+// Release smoke test: with VIBEVAC_SMOKE=1 the app scans VIBEVAC_SMOKE_ROOT,
+// writes the report JSON to VIBEVAC_SMOKE_OUT and exits without a window.
+fn run_smoke_test() -> Result<(), String> {
+    let root = std::env::var("VIBEVAC_SMOKE_ROOT")
+        .map_err(|_| "VIBEVAC_SMOKE_ROOT is not set".to_owned())?;
+    let output = std::env::var_os("VIBEVAC_SMOKE_OUT")
+        .ok_or_else(|| "VIBEVAC_SMOKE_OUT is not set".to_owned())?;
+    let report = core::scan_single_root(14, &root)?;
+    let json = serde_json::to_string_pretty(&report)
+        .map_err(|error| format!("Could not serialize the scan report: {error}"))?;
+    std::fs::write(&output, format!("{json}\n"))
+        .map_err(|error| format!("Could not write the scan report: {error}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if std::env::var_os("VIBEVAC_SMOKE").is_some_and(|value| value == "1") {
+        std::process::exit(match run_smoke_test() {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("VibeVac smoke test failed: {error}");
+                1
+            }
+        });
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![

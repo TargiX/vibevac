@@ -1,10 +1,12 @@
 import type {
+  CommandTimeout,
   DiscoveryRoot,
   ScanReport,
   WorkspaceCandidate,
   WorkspaceReport,
 } from "../domain/types.js";
 import { isAbsolute, relative, sep } from "node:path";
+import { CONTRACT_HEADER } from "../engine.js";
 import {
   countProcessesWithin,
   inspectActiveProcesses,
@@ -15,6 +17,7 @@ import { inventoryRebuildableCaches } from "./cache-inventory.js";
 import { discoverWorkspaces } from "./discovery.js";
 import { diskUsageBytes } from "./disk-usage.js";
 import { inspectGit } from "./git-inspector.js";
+import { collectTimeouts } from "./run-command.js";
 
 interface ScanOptions {
   includeSize?: boolean;
@@ -161,8 +164,9 @@ export async function scanWorkspaces(
 ): Promise<ScanReport> {
   const now = Date.now();
   const staleAfterDays = options.staleAfterDays ?? 14;
+  const timeouts: CommandTimeout[] = [];
   const [candidates, processes] = await Promise.all([
-    discoverWorkspaces(roots),
+    collectTimeouts(timeouts, null, () => discoverWorkspaces(roots)),
     inspectActiveProcesses(),
   ]);
   let completed = 0;
@@ -171,12 +175,14 @@ export async function scanWorkspaces(
     candidates,
     options.concurrency ?? 4,
     async (candidate) => {
-      const workspace = await scanCandidate(
-        candidate,
-        options.includeSize ?? true,
-        processes,
-        staleAfterDays,
-        now,
+      const workspace = await collectTimeouts(timeouts, candidate.path, () =>
+        scanCandidate(
+          candidate,
+          options.includeSize ?? true,
+          processes,
+          staleAfterDays,
+          now,
+        ),
       );
       completed += 1;
       options.onProgress?.({ completed, total: candidates.length });
@@ -201,6 +207,7 @@ export async function scanWorkspaces(
   });
 
   return {
+    ...CONTRACT_HEADER,
     generatedAt: new Date().toISOString(),
     roots,
     workspaces,
@@ -229,5 +236,6 @@ export async function scanWorkspaces(
     staleAfterDays,
     processCheckAvailable: processes.available,
     processCheckError: processes.error,
+    timeouts,
   };
 }

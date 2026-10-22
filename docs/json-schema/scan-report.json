@@ -1,0 +1,426 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/ScanReport",
+  "definitions": {
+    "ScanReport": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 2
+        },
+        "engine": {
+          "$ref": "#/definitions/Engine"
+        },
+        "engineVersion": {
+          "type": "string"
+        },
+        "generatedAt": {
+          "type": "string"
+        },
+        "roots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DiscoveryRoot"
+          }
+        },
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WorkspaceReport"
+          }
+        },
+        "totalSizeBytes": {
+          "type": "number"
+        },
+        "totalCacheBytes": {
+          "type": "number"
+        },
+        "reclaimableCacheBytes": {
+          "type": "number"
+        },
+        "retainedSizeBytes": {
+          "type": "number"
+        },
+        "candidateSizeBytes": {
+          "type": "number"
+        },
+        "staleAfterDays": {
+          "type": "number"
+        },
+        "processCheckAvailable": {
+          "type": "boolean"
+        },
+        "processCheckError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeouts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CommandTimeout"
+          }
+        }
+      },
+      "required": [
+        "candidateSizeBytes",
+        "engine",
+        "engineVersion",
+        "generatedAt",
+        "processCheckAvailable",
+        "processCheckError",
+        "reclaimableCacheBytes",
+        "retainedSizeBytes",
+        "roots",
+        "schemaVersion",
+        "staleAfterDays",
+        "totalCacheBytes",
+        "totalSizeBytes",
+        "workspaces"
+      ],
+      "additionalProperties": false
+    },
+    "Engine": {
+      "type": "string",
+      "enum": [
+        "node",
+        "native"
+      ]
+    },
+    "DiscoveryRoot": {
+      "type": "object",
+      "properties": {
+        "tool": {
+          "$ref": "#/definitions/WorkspaceTool"
+        },
+        "path": {
+          "type": "string"
+        },
+        "maxDepth": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "tool",
+        "path",
+        "maxDepth"
+      ],
+      "additionalProperties": false
+    },
+    "WorkspaceTool": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "conductor",
+        "cursor",
+        "claude",
+        "hermes",
+        "antigravity",
+        "openclaw",
+        "projects",
+        "custom"
+      ]
+    },
+    "WorkspaceReport": {
+      "type": "object",
+      "properties": {
+        "dataSafety": {
+          "$ref": "#/definitions/DataSafety"
+        },
+        "recommendation": {
+          "$ref": "#/definitions/Recommendation"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tool": {
+          "$ref": "#/definitions/WorkspaceTool"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sourcePath": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sizeError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GitInspection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inspectionError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "activeProcessCount": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "caches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CacheEntry"
+          }
+        },
+        "cacheBytes": {
+          "type": "number"
+        },
+        "retainedSizeBytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cacheCleanupAllowed": {
+          "type": "boolean"
+        },
+        "cacheCleanupReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cacheInspectionError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "activeProcessCount",
+        "cacheBytes",
+        "cacheCleanupAllowed",
+        "cacheCleanupReason",
+        "cacheInspectionError",
+        "caches",
+        "dataSafety",
+        "git",
+        "inspectionError",
+        "path",
+        "reasons",
+        "recommendation",
+        "retainedSizeBytes",
+        "sizeBytes",
+        "sizeError",
+        "sourcePath",
+        "tool"
+      ],
+      "additionalProperties": false
+    },
+    "DataSafety": {
+      "type": "string",
+      "enum": [
+        "recoverable",
+        "local-only",
+        "unknown"
+      ]
+    },
+    "Recommendation": {
+      "type": "string",
+      "enum": [
+        "candidate",
+        "keep",
+        "review",
+        "protect"
+      ]
+    },
+    "GitInspection": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/WorkspaceKind"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head": {
+          "type": "string"
+        },
+        "upstream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ahead": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "behind": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "dirtyEntries": {
+          "type": "number"
+        },
+        "untrackedEntries": {
+          "type": "number"
+        },
+        "remoteContainsHead": {
+          "type": "boolean"
+        },
+        "defaultBranch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mergedIntoDefault": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "lastCommitAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastActivityAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "branch",
+        "head",
+        "upstream",
+        "ahead",
+        "behind",
+        "dirtyEntries",
+        "untrackedEntries",
+        "remoteContainsHead",
+        "defaultBranch",
+        "mergedIntoDefault",
+        "lastCommitAt",
+        "lastActivityAt"
+      ],
+      "additionalProperties": false
+    },
+    "WorkspaceKind": {
+      "type": "string",
+      "enum": [
+        "linked-worktree",
+        "standalone-repository"
+      ]
+    },
+    "CacheEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "relativePath": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/CacheKind"
+        },
+        "sizeBytes": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sizeError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ignoredByGit": {
+          "type": "boolean",
+          "const": true
+        },
+        "rebuildHint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "relativePath",
+        "name",
+        "kind",
+        "sizeBytes",
+        "sizeError",
+        "ignoredByGit",
+        "rebuildHint"
+      ],
+      "additionalProperties": false
+    },
+    "CacheKind": {
+      "type": "string",
+      "enum": [
+        "dependencies",
+        "framework-build",
+        "build-output",
+        "test-output",
+        "tool-cache"
+      ]
+    },
+    "CommandTimeout": {
+      "type": "object",
+      "properties": {
+        "workspacePath": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "seconds": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "workspacePath",
+        "command",
+        "seconds"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

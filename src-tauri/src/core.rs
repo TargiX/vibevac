@@ -12,6 +12,10 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DAY_IN_SECONDS: i64 = 86_400;
+const SCHEMA_VERSION: u8 = 2;
+const AUDIT_VERSION: u8 = 2;
+const ENGINE: &str = "native";
+const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CACHE_MAX_DEPTH: u8 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -141,6 +145,9 @@ struct WorkspaceReport {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ScanReport {
+    schema_version: u8,
+    engine: &'static str,
+    engine_version: &'static str,
     generated_at: String,
     roots: Vec<DiscoveryRoot>,
     workspaces: Vec<WorkspaceReport>,
@@ -166,6 +173,9 @@ pub(crate) struct CleanupRequest {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CacheCleanupPlan {
+    schema_version: u8,
+    engine: &'static str,
+    engine_version: &'static str,
     workspace_path: String,
     caches: Vec<CacheEntry>,
     reclaim_bytes: u64,
@@ -215,6 +225,9 @@ struct RemovedCache {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CacheCleanupResult {
+    schema_version: u8,
+    engine: &'static str,
+    engine_version: &'static str,
     workspace_path: String,
     removed: Vec<RemovedCache>,
     reclaimed_bytes: u64,
@@ -242,6 +255,9 @@ pub(crate) struct WorktreeRemovalRequest {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorktreeRemovalPlan {
+    schema_version: u8,
+    engine: &'static str,
+    engine_version: &'static str,
     force: bool,
     warnings: Vec<String>,
     ignored_fingerprint: String,
@@ -261,6 +277,9 @@ pub(crate) struct WorktreeRemovalPlan {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorktreeRemovalResult {
+    schema_version: u8,
+    engine: &'static str,
+    engine_version: &'static str,
     workspace_path: String,
     reclaimed_bytes: u64,
     preserved_branch: String,
@@ -1459,8 +1478,28 @@ pub(crate) fn scan_workspaces(
     stale_after_days: u64,
     custom_roots: Vec<String>,
 ) -> Result<ScanReport, String> {
+    scan_discovery_roots(stale_after_days, discovery_roots(custom_roots)?)
+}
+
+// Scans one root without the default roots, for the release smoke test.
+pub(crate) fn scan_single_root(stale_after_days: u64, root: &str) -> Result<ScanReport, String> {
+    let path = fs::canonicalize(root)
+        .map_err(|error| format!("Could not resolve scan root {root}: {error}"))?;
+    scan_discovery_roots(
+        stale_after_days,
+        vec![DiscoveryRoot {
+            tool: WorkspaceTool::Custom,
+            path: path.to_string_lossy().into_owned(),
+            max_depth: 4,
+        }],
+    )
+}
+
+fn scan_discovery_roots(
+    stale_after_days: u64,
+    roots: Vec<DiscoveryRoot>,
+) -> Result<ScanReport, String> {
     let stale_after_days = stale_after_days.clamp(1, 365);
-    let roots = discovery_roots(custom_roots)?;
     let candidates = discover_workspaces(&roots);
     let processes = inspect_active_processes();
     let now_seconds = SystemTime::now()
@@ -1484,6 +1523,9 @@ pub(crate) fn scan_workspaces(
     });
 
     Ok(ScanReport {
+        schema_version: SCHEMA_VERSION,
+        engine: ENGINE,
+        engine_version: ENGINE_VERSION,
         generated_at: now_iso(),
         total_size_bytes: workspaces
             .iter()
@@ -1597,6 +1639,9 @@ fn plan_cache_cleanup_with_snapshot(
     let reclaim_bytes = caches.iter().filter_map(|cache| cache.size_bytes).sum();
 
     Ok(CacheCleanupPlan {
+        schema_version: SCHEMA_VERSION,
+        engine: ENGINE,
+        engine_version: ENGINE_VERSION,
         workspace_path: workspace_path.to_string_lossy().into_owned(),
         caches,
         reclaim_bytes,
@@ -1920,6 +1965,9 @@ fn plan_worktree_removal_with_snapshot(
     );
 
     Ok(WorktreeRemovalPlan {
+        schema_version: SCHEMA_VERSION,
+        engine: ENGINE,
+        engine_version: ENGINE_VERSION,
         force: request.force,
         warnings: if request.force { warnings } else { Vec::new() },
         ignored_fingerprint: ignored_fingerprint(&workspace_path, &unknown_ignored)?,
@@ -1965,6 +2013,47 @@ pub(crate) fn plan_worktree_removal_batch(
     ))
 }
 
+// Both engines hash the same JSON: fields in declaration order, cache paths
+// sorted bytewise. See `cachePlanId` in src/engine.ts.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CachePlanIdentity<'a> {
+    workspace_path: &'a str,
+    relative_paths: Vec<&'a str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreePlanIdentity<'a> {
+    workspace_path: &'a str,
+    head: &'a str,
+}
+
+fn plan_id(identity: &impl Serialize) -> String {
+    let json = serde_json::to_string(identity).unwrap_or_default();
+    Sha256::digest(json.as_bytes())
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn cache_plan_id(workspace_path: &str, relative_paths: &[&str]) -> String {
+    let mut relative_paths = relative_paths.to_vec();
+    relative_paths.sort_unstable();
+    plan_id(&CachePlanIdentity {
+        workspace_path,
+        relative_paths,
+    })
+}
+
+fn worktree_plan_id(workspace_path: &str, head: &str) -> String {
+    plan_id(&WorktreePlanIdentity {
+        workspace_path,
+        head,
+    })
+}
+
 fn open_audit_file(path: &Path) -> Result<File, String> {
     let parent = path
         .parent()
@@ -1997,6 +2086,14 @@ fn execute_cache_cleanup_with_options(
     }
 
     let mut audit_file = open_audit_file(audit_path)?;
+    let plan_id = cache_plan_id(
+        &plan.workspace_path,
+        &plan
+            .caches
+            .iter()
+            .map(|cache| cache.relative_path.as_str())
+            .collect::<Vec<_>>(),
+    );
     let mut removed = Vec::<RemovedCache>::new();
     let completed_at = now_iso();
     for cache in &plan.caches {
@@ -2009,7 +2106,10 @@ fn execute_cache_cleanup_with_options(
             let audit_result = append_audit(
                 &mut audit_file,
                 &json!({
-                    "version": 1,
+                    "version": AUDIT_VERSION,
+                    "engine": ENGINE,
+                    "engineVersion": ENGINE_VERSION,
+                    "planId": plan_id,
                     "action": "cache-cleanup-partial",
                     "completedAt": now_iso(),
                     "workspacePath": plan.workspace_path,
@@ -2031,7 +2131,10 @@ fn execute_cache_cleanup_with_options(
     append_audit(
         &mut audit_file,
         &json!({
-            "version": 1,
+            "version": AUDIT_VERSION,
+            "engine": ENGINE,
+            "engineVersion": ENGINE_VERSION,
+            "planId": plan_id,
             "action": "cache-cleanup",
             "completedAt": completed_at,
             "workspacePath": plan.workspace_path,
@@ -2041,6 +2144,9 @@ fn execute_cache_cleanup_with_options(
     )?;
 
     Ok(CacheCleanupResult {
+        schema_version: SCHEMA_VERSION,
+        engine: ENGINE,
+        engine_version: ENGINE_VERSION,
         workspace_path: plan.workspace_path,
         removed,
         reclaimed_bytes: plan.reclaim_bytes,
@@ -2080,6 +2186,7 @@ fn execute_worktree_removal_with_options(
     }
 
     let mut audit_file = open_audit_file(audit_path)?;
+    let plan_id = worktree_plan_id(&plan.workspace_path, &plan.head);
     let completed_at = now_iso();
     let output = Command::new("git")
         .arg(format!("--git-dir={}", plan.common_git_directory))
@@ -2097,7 +2204,10 @@ fn execute_worktree_removal_with_options(
         let audit_result = append_audit(
             &mut audit_file,
             &json!({
-                "version": 1,
+                "version": AUDIT_VERSION,
+                "engine": ENGINE,
+                "engineVersion": ENGINE_VERSION,
+                "planId": plan_id,
                 "action": "worktree-removal-failed",
                 "completedAt": now_iso(),
                 "workspacePath": plan.workspace_path,
@@ -2116,7 +2226,10 @@ fn execute_worktree_removal_with_options(
     append_audit(
         &mut audit_file,
         &json!({
-            "version": 1,
+            "version": AUDIT_VERSION,
+            "engine": ENGINE,
+            "engineVersion": ENGINE_VERSION,
+            "planId": plan_id,
             "action": "worktree-removal",
             "completedAt": completed_at,
             "workspacePath": plan.workspace_path,
@@ -2131,6 +2244,9 @@ fn execute_worktree_removal_with_options(
     )?;
 
     Ok(WorktreeRemovalResult {
+        schema_version: SCHEMA_VERSION,
+        engine: ENGINE,
+        engine_version: ENGINE_VERSION,
         workspace_path: plan.workspace_path,
         reclaimed_bytes: plan.size_bytes,
         preserved_branch: plan.branch,
@@ -2573,9 +2689,34 @@ mod tests {
         assert!(repository.path().join("README.md").exists());
         assert!(repository.path().join(".git").exists());
         assert_eq!(result.removed.len(), 1);
-        assert!(fs::read_to_string(audit_path)
-            .expect("audit contents")
-            .contains("cache-cleanup"));
+        assert_eq!((result.schema_version, result.engine), (2, "native"));
+        let event: serde_json::Value = serde_json::from_str(
+            fs::read_to_string(audit_path)
+                .expect("audit contents")
+                .trim(),
+        )
+        .expect("audit record");
+        assert_eq!(event["action"], "cache-cleanup");
+        assert_eq!(event["version"], 2);
+        assert_eq!(event["engine"], "native");
+        assert_eq!(event["engineVersion"], ENGINE_VERSION);
+        assert_eq!(
+            event["planId"],
+            cache_plan_id(&plan.workspace_path, &["node_modules"])
+        );
+    }
+
+    // Same vectors as test/contracts.test.ts: both engines must agree.
+    #[test]
+    fn plan_ids_match_the_node_engine() {
+        assert_eq!(
+            cache_plan_id("/work/app", &["node_modules", "dist"]),
+            "2b652a38f84fb410"
+        );
+        assert_eq!(
+            worktree_plan_id("/work/app", "0123456789abcdef0123456789abcdef01234567"),
+            "d1c2e4bb11feb12b"
+        );
     }
 
     #[test]
@@ -2863,6 +3004,15 @@ mod tests {
         let event: serde_json::Value =
             serde_json::from_str(fs::read_to_string(audit).unwrap().trim()).unwrap();
         assert_eq!(event["force"], true);
+        assert_eq!(event["version"], 2);
+        assert_eq!(event["engine"], "native");
+        assert_eq!(
+            event["planId"],
+            worktree_plan_id(
+                &plan.workspace_path,
+                reviewed.reviewed_head.as_deref().unwrap()
+            )
+        );
         assert_eq!(
             event["warnings"].as_array().unwrap().len(),
             reviewed.reviewed_warnings.unwrap().len()

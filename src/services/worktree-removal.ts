@@ -1,12 +1,12 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { appendFile, lstat, mkdir, readdir, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 
+import { AUDIT_HEADER, CONTRACT_HEADER, worktreePlanId } from "../engine.js";
 import type {
+  AuditRecord,
   WorktreeRemovalPlan,
   WorktreeRemovalResult,
 } from "../domain/types.js";
@@ -19,8 +19,8 @@ import { inventoryRebuildableCaches } from "./cache-inventory.js";
 import { classifyWorkspace } from "./classifier.js";
 import { diskUsageBytes } from "./disk-usage.js";
 import { inspectGit } from "./git-inspector.js";
+import { runCommand } from "./run-command.js";
 
-const execFileAsync = promisify(execFile);
 const DAY_IN_MS = 86_400_000;
 const REBUILDABLE_IGNORED_FILES = new Set([
   ".eslintcache",
@@ -45,8 +45,8 @@ interface WorktreeRemovalOptions {
 }
 
 async function runGit(workspacePath: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", workspacePath, ...args], {
-    encoding: "utf8",
+  const { stdout } = await runCommand("git", ["-C", workspacePath, ...args], {
+    timeoutMs: 5_000,
     maxBuffer: 10 * 1024 * 1024,
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
   });
@@ -241,6 +241,7 @@ export async function planWorktreeRemoval(
   )} worktree add ${shellQuote(workspacePath)} ${shellQuote(branch)}`;
 
   return {
+    ...CONTRACT_HEADER,
     force,
     warnings: force ? warnings : [],
     ignoredFingerprint: await ignoredFingerprint(workspacePath, unknownIgnored),
@@ -275,9 +276,10 @@ export async function executeWorktreeRemoval(
   const auditPath = options.auditPath ?? resolve(homedir(), ".vibevac/audit.jsonl");
   await mkdir(dirname(auditPath), { recursive: true });
   const completedAt = new Date().toISOString();
+  const planId = worktreePlanId(plan.workspacePath, plan.head);
 
   try {
-    await execFileAsync(
+    await runCommand(
       "git",
       [
         `--git-dir=${plan.commonGitDirectory}`,
@@ -286,13 +288,14 @@ export async function executeWorktreeRemoval(
         "--force",
         plan.workspacePath,
       ],
-      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+      { timeoutMs: 60_000, maxBuffer: 10 * 1024 * 1024 },
     );
   } catch (error) {
     await appendFile(
       auditPath,
       `${JSON.stringify({
-        version: 1,
+        ...AUDIT_HEADER,
+        planId,
         action: "worktree-removal-failed",
         completedAt: new Date().toISOString(),
         workspacePath: plan.workspacePath,
@@ -300,7 +303,7 @@ export async function executeWorktreeRemoval(
         force: plan.force,
         warnings: plan.warnings,
         error: error instanceof Error ? error.message : String(error),
-      })}\n`,
+      } satisfies AuditRecord)}\n`,
       "utf8",
     );
     throw error;
@@ -309,7 +312,8 @@ export async function executeWorktreeRemoval(
   await appendFile(
     auditPath,
     `${JSON.stringify({
-      version: 1,
+      ...AUDIT_HEADER,
+      planId,
       action: "worktree-removal",
       completedAt,
       workspacePath: plan.workspacePath,
@@ -320,11 +324,12 @@ export async function executeWorktreeRemoval(
       head: plan.head,
       upstream: plan.upstream,
       reconstructionCommand: plan.reconstructionCommand,
-    })}\n`,
+    } satisfies AuditRecord)}\n`,
     "utf8",
   );
 
   return {
+    ...CONTRACT_HEADER,
     workspacePath: plan.workspacePath,
     reclaimedBytes: plan.sizeBytes,
     preservedBranch: plan.branch,

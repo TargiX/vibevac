@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { cachePlanId } from "../src/engine.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ActiveProcessSnapshot } from "../src/services/active-processes.js";
@@ -88,6 +89,15 @@ describe("cache cleanup", () => {
     );
     expect(result.removed).toHaveLength(1);
     expect(await readFile(auditPath, "utf8")).toContain('"action":"cache-cleanup"');
+    expect(plan).toMatchObject({ schemaVersion: 2, engine: "node" });
+    expect(result).toMatchObject({ schemaVersion: 2, engine: "node" });
+    const audit = JSON.parse((await readFile(auditPath, "utf8")).trim());
+    expect(audit).toMatchObject({
+      version: 2,
+      engine: "node",
+      engineVersion: plan.engineVersion,
+      planId: cachePlanId(plan.workspacePath, ["node_modules"]),
+    });
   });
 
   it("refuses arbitrary paths that are not in the verified inventory", async () => {

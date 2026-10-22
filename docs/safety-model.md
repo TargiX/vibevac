@@ -159,6 +159,31 @@ Every completed or partial operation is appended to
 `~/.vibevac/audit.jsonl`. Cache cleanup preserves the workspace, source,
 branch, and Git history.
 
+### Audit record format
+
+Each line of `~/.vibevac/audit.jsonl` is one JSON object, described by
+[`docs/json-schema/audit-record.json`](json-schema/audit-record.json).
+Records written since 0.3 carry `version: 2`; earlier lines carry
+`version: 1` and lack the fields below.
+
+| Field | Meaning |
+| --- | --- |
+| `version` | Audit record format, currently `2` |
+| `engine`, `engineVersion` | `node` (CLI and `vibevac ui`) or `native` (desktop app), and its release version |
+| `planId` | First 16 hex characters of SHA-256 over the revalidated plan identity |
+| `action` | `cache-cleanup`, `cache-cleanup-partial`, `worktree-removal`, or `worktree-removal-failed` |
+| `completedAt`, `workspacePath` | When it happened and the canonical workspace path |
+
+`planId` lets a partial or failed record be matched to the plan it executed.
+Both engines hash the same compact JSON: `{"workspacePath":…,"relativePaths":[…]}`
+with cache paths sorted bytewise for cache cleanup, and
+`{"workspacePath":…,"head":…}` for worktree removal.
+
+The scan report (`vibevac --json`) and the cleanup and removal plans carry
+`schemaVersion: 2`, `engine`, and `engineVersion`; their schemas sit beside the
+audit schema in [`docs/json-schema/`](json-schema/). Regenerate them with
+`pnpm schema` after changing `src/domain/types.ts`; CI fails when they differ.
+
 The CLI `clean` command defaults to a preview. It requires an explicit exact
 workspace and either selected `--cache` paths or `--all` for that workspace.
 Deletion additionally requires `--execute` and the exact `--confirm` phrase

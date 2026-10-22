@@ -46,6 +46,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check generated JSON Schema
+        run: |
+          pnpm schema
+          git diff --exit-code docs/json-schema
+          test -z "$(git status --porcelain docs/json-schema)"
+
       - name: Validate TypeScript and Vue
         run: pnpm typecheck
 
@@ -60,3 +66,39 @@ jobs:
 
       - name: Lint Rust
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  package-smoke:
+    name: Packed npm tarball
+    needs: validate
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and pack
+        run: |
+          pnpm build
+          pnpm pack
+
+      - name: Scan a fixture with the packed CLI
+        run: |
+          SMOKE_DIR="$RUNNER_TEMP/vibevac-smoke"
+          bash scripts/create-smoke-fixture.sh "$SMOKE_DIR/root"
+          npx --yes ./vibevac-*.tgz scan --json --root "$SMOKE_DIR/root" > "$SMOKE_DIR/report.json"
+          node scripts/check-smoke-report.mjs "$SMOKE_DIR/report.json" node
