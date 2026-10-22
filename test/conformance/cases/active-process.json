@@ -38,15 +38,5 @@
       "ok": false,
       "error": "Cleanup blocked: 1 running process is using this workspace"
     }
-  },
-  "knownDivergences": [
-    {
-      "engine": "rust",
-      "field": "reasons",
-      "actual": [
-        "1 running process is working inside this workspace"
-      ],
-      "reason": "Wording only: both engines return keep/recoverable and block cleanup. src/services/classifier.ts and src-tauri/src/core.rs classify_workspace phrase the active-process reason differently."
-    }
-  ]
+  }
 }

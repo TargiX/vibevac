@@ -1465,8 +1465,8 @@ fn classify_workspace(
             data_safety: DataSafety::Recoverable,
             recommendation: Recommendation::Keep,
             reasons: vec![format!(
-                "{count} running process{} working inside this workspace",
-                if count == 1 { " is" } else { "es are" }
+                "{count} running process{} a working directory here",
+                if count == 1 { " has" } else { "es have" }
             )],
         };
     }
