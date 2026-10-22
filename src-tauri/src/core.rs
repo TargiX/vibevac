@@ -1478,8 +1478,28 @@ pub(crate) fn scan_workspaces(
     stale_after_days: u64,
     custom_roots: Vec<String>,
 ) -> Result<ScanReport, String> {
+    scan_discovery_roots(stale_after_days, discovery_roots(custom_roots)?)
+}
+
+// Scans one root without the default roots, for the release smoke test.
+pub(crate) fn scan_single_root(stale_after_days: u64, root: &str) -> Result<ScanReport, String> {
+    let path = fs::canonicalize(root)
+        .map_err(|error| format!("Could not resolve scan root {root}: {error}"))?;
+    scan_discovery_roots(
+        stale_after_days,
+        vec![DiscoveryRoot {
+            tool: WorkspaceTool::Custom,
+            path: path.to_string_lossy().into_owned(),
+            max_depth: 4,
+        }],
+    )
+}
+
+fn scan_discovery_roots(
+    stale_after_days: u64,
+    roots: Vec<DiscoveryRoot>,
+) -> Result<ScanReport, String> {
     let stale_after_days = stale_after_days.clamp(1, 365);
-    let roots = discovery_roots(custom_roots)?;
     let candidates = discover_workspaces(&roots);
     let processes = inspect_active_processes();
     let now_seconds = SystemTime::now()
